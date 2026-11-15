@@ -1,12 +1,19 @@
 package com.winlator.fexcore
 
 import com.winlator.core.envvars.EnvVars
+import java.io.File
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class FEXCoreManagerTest {
+
+    @get:Rule
+    val temp = TemporaryFolder()
 
     private val builtInPresets = listOf(
         FEXCorePreset.STABILITY,
@@ -118,5 +125,64 @@ class FEXCoreManagerTest {
     @Test
     fun `an empty option set writes an empty Config block`() {
         assertTrue(configOf(FEXCoreManager.containerConfigContent(EnvVars())).isEmpty())
+    }
+
+    private fun tsoOptions() = EnvVars().apply { put("FEX_TSOENABLED", "1") }
+
+    private fun configFile(root: File) = File(root, ".fex-emu/Config.json")
+
+    @Test
+    fun `a config location or portable mode in the environment is detected`() {
+        assertFalse(FEXCoreManager.configLocationOverridden(EnvVars("FEX_TSOENABLED=1")))
+        assertTrue(FEXCoreManager.configLocationOverridden(EnvVars("FEX_APP_CONFIG_LOCATION=/x/")))
+        assertTrue(FEXCoreManager.configLocationOverridden(EnvVars("FEX_PORTABLE=1")))
+    }
+
+    @Test
+    fun `a config is ours only when it matches the record`() {
+        assertTrue(FEXCoreManager.isOwnConfig("a", "a"))
+        assertFalse(FEXCoreManager.isOwnConfig("a", "b"))
+        assertFalse(FEXCoreManager.isOwnConfig("a", null))
+        assertFalse(FEXCoreManager.isOwnConfig(null, null))
+    }
+
+    @Test
+    fun `the config this launcher wrote is rewritten and deleted`() {
+        val root = temp.newFolder()
+
+        assertTrue(FEXCoreManager.writeContainerConfig(root, tsoOptions()))
+        assertEquals(mapOf("TSOEnabled" to "1"), configOf(configFile(root).readText()))
+        assertTrue(FEXCoreManager.writeContainerConfig(root, EnvVars()))
+
+        FEXCoreManager.deleteOwnContainerConfig(root)
+
+        assertFalse(configFile(root).exists())
+        assertTrue(FEXCoreManager.canWriteContainerConfig(root))
+    }
+
+    @Test
+    fun `a user's config is neither overwritten nor deleted`() {
+        val root = temp.newFolder()
+        val user = "{\"Config\": {\"Multiblock\": \"1\"}}"
+        configFile(root).parentFile!!.mkdirs()
+        configFile(root).writeText(user)
+
+        assertFalse(FEXCoreManager.canWriteContainerConfig(root))
+        assertFalse(FEXCoreManager.writeContainerConfig(root, tsoOptions()))
+        FEXCoreManager.deleteOwnContainerConfig(root)
+
+        assertEquals(user, configFile(root).readText())
+    }
+
+    @Test
+    fun `a config the user changed after it was written is kept`() {
+        val root = temp.newFolder()
+        assertTrue(FEXCoreManager.writeContainerConfig(root, tsoOptions()))
+        configFile(root).writeText("{}")
+
+        FEXCoreManager.deleteOwnContainerConfig(root)
+
+        assertEquals("{}", configFile(root).readText())
+        assertFalse(FEXCoreManager.canWriteContainerConfig(root))
     }
 }

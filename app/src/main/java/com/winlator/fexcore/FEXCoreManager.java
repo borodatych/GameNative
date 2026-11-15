@@ -17,6 +17,7 @@ import com.winlator.core.FileUtils;
 import com.winlator.core.envvars.EnvVars;
 import com.winlator.xenvironment.ImageFs;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -50,6 +51,11 @@ public final class FEXCoreManager {
     static final String APP_CONFIG_CONTENT = appConfigContent();
 
     private static final String CONTAINER_CONFIG_PATH = ".fex-emu/Config.json";
+
+    // Copy of the Config.json this launcher wrote; a Config.json that does not match it is the user's.
+    private static final String CONTAINER_CONFIG_RECORD_PATH = ".fex-emu/.Config.json.launcher";
+
+    private static final String[] CONFIG_LOCATION_ENV_VARS = {"FEX_APP_CONFIG_LOCATION", "FEX_PORTABLE"};
 
     FEXCoreManager() {
     }
@@ -93,15 +99,47 @@ public final class FEXCoreManager {
         return json.append("\n  }\n}\n").toString();
     }
 
+    /** True when these variables make FEX read its config from somewhere other than the container home. */
+    public static boolean configLocationOverridden(EnvVars envVars) {
+        for (String name : CONFIG_LOCATION_ENV_VARS) {
+            if (envVars.has(name)) return true;
+        }
+        return false;
+    }
+
+    static boolean isOwnConfig(String config, String record) {
+        return config != null && config.equals(record);
+    }
+
+    private static String readIfFile(File file) {
+        if (!file.isFile()) return null;
+        byte[] data = FileUtils.read(file);
+        return data != null ? new String(data, StandardCharsets.UTF_8) : null;
+    }
+
+    private static boolean ownsContainerConfig(File containerRootDir) {
+        return isOwnConfig(readIfFile(new File(containerRootDir, CONTAINER_CONFIG_PATH)),
+            readIfFile(new File(containerRootDir, CONTAINER_CONFIG_RECORD_PATH)));
+    }
+
+    /** False when the container has a Config.json this launcher did not write. */
+    public static boolean canWriteContainerConfig(File containerRootDir) {
+        return !new File(containerRootDir, CONTAINER_CONFIG_PATH).exists() || ownsContainerConfig(containerRootDir);
+    }
+
     public static boolean writeContainerConfig(File containerRootDir, EnvVars options) {
+        if (!canWriteContainerConfig(containerRootDir)) return false;
         String content = containerConfigContent(options);
+        if (!FileUtils.writeString(new File(containerRootDir, CONTAINER_CONFIG_RECORD_PATH), content)) return false;
         if (!FileUtils.writeString(new File(containerRootDir, CONTAINER_CONFIG_PATH), content)) return false;
         Timber.i("FEX container config: %s", content.replaceAll("\\s+", " "));
         return true;
     }
 
-    public static void deleteContainerConfig(File containerRootDir) {
-        new File(containerRootDir, CONTAINER_CONFIG_PATH).delete();
+    /** Deletes the container Config.json only when this launcher wrote it. */
+    public static void deleteOwnContainerConfig(File containerRootDir) {
+        if (ownsContainerConfig(containerRootDir)) new File(containerRootDir, CONTAINER_CONFIG_PATH).delete();
+        new File(containerRootDir, CONTAINER_CONFIG_RECORD_PATH).delete();
     }
 
     public static File ensureAppConfigOverrides(Context context) {
@@ -132,28 +170,6 @@ public final class FEXCoreManager {
             }
         }
         return null;
-    }
-
-    /**
-     * Delete existing FEXCore config files for the given container.
-     * Removes both container-level config files and app-level config directories.
-     */
-    public static void deleteConfigFiles(Context context, String containerId) {
-        try {
-            ImageFs imageFs = ImageFs.find(context);
-            // Delete container-level config
-            File containerConfig = new File(imageFs.home_path + "-" + containerId + "/.fex-emu/Config.json");
-            if (containerConfig.exists()) {
-                containerConfig.delete();
-            }
-            // Delete app-level config directory
-            File appConfigDir = new File(context.getFilesDir(), "imagefs/home/xuser/.fex-emu/AppConfig");
-            if (appConfigDir.exists() && appConfigDir.isDirectory()) {
-                FileUtils.delete(appConfigDir);
-            }
-        } catch (Exception e) {
-            Timber.e(e, "Failed to delete FEXCore config files");
-        }
     }
 
     public static void loadFEXCoreVersion(Context context, ContentsManager contentsManager, Spinner spinner, Container container) {

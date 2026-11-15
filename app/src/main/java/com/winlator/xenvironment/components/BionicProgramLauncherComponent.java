@@ -88,6 +88,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
     private final ContentProfile wineProfile;
     private Container container;
     private File workingDir;
+    private boolean wroteFexContainerConfig;
 
     public void setWineInfo(WineInfo wineInfo) {
         this.wineInfo = wineInfo;
@@ -97,7 +98,11 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
     }
 
     public Container getContainer() { return this.container; }
-    public void setContainer(Container container) { this.container = container; }
+    public void setContainer(Container container) {
+        this.container = container;
+        // A session that crashed or was force-stopped leaves its Config.json behind for the helper commands run before the next start.
+        if (container != null) FEXCoreManager.deleteOwnContainerConfig(container.getRootDir());
+    }
 
     // Resolve which libredirect shim to preload. Normally the flavor default
     // (PRELOAD_BIONIC_SO). When the container disables libredirect, modern falls
@@ -181,7 +186,10 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
                 SteamService.setKeepAlive(false);
             }
             execShellCommand("wineserver -k");
-            if (container != null) FEXCoreManager.deleteContainerConfig(container.getRootDir());
+            if (wroteFexContainerConfig && container != null) {
+                FEXCoreManager.deleteOwnContainerConfig(container.getRootDir());
+                wroteFexContainerConfig = false;
+            }
         }
     }
 
@@ -243,6 +251,24 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
     public void setWorkingDir(File workingDir) {
         this.workingDir = workingDir;
+    }
+
+    private boolean writeFexContainerConfig(EnvVars envVars, EnvVars fexConfig) {
+        File rootDir = container.getRootDir();
+        if (FEXCoreManager.configLocationOverridden(envVars)) {
+            Log.i("BionicProgramLauncherComponent", "FEX config location is set by the environment; passing the FEX preset as environment variables");
+            return false;
+        }
+        if (!FEXCoreManager.canWriteContainerConfig(rootDir)) {
+            Log.i("BionicProgramLauncherComponent", "Container has its own FEX Config.json; passing the FEX preset as environment variables");
+            return false;
+        }
+        if (!FEXCoreManager.writeContainerConfig(rootDir, fexConfig)) {
+            Log.e("BionicProgramLauncherComponent", "Could not write the FEX container config; passing it as environment variables");
+            return false;
+        }
+        wroteFexContainerConfig = true;
+        return true;
     }
 
     private int execGuestProgram() {
@@ -469,17 +495,20 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         // Code-map capture (input for offline code caches, uploaded after exit) is decided here, after
         // every preset and container variable has been merged, so nothing can override the gate.
+        boolean captureCodeMaps = FexCodeMaps.captureEnabled(context, contentsManager, container);
         envVars.remove("FEX_ENABLECODECACHINGWIP");
-        if (FexCodeMaps.captureEnabled(context, contentsManager, container)) {
+        fexConfig.remove("FEX_ENABLECODECACHINGWIP");
+        if (captureCodeMaps) {
             (fexContainerConfig ? fexConfig : envVars).put("FEX_ENABLECODECACHINGWIP", "1");
         }
 
         // Through Config.json so the per-app files of the Steam client and launcher helpers override these options.
-        if (fexContainerConfig && !FEXCoreManager.writeContainerConfig(container.getRootDir(), fexConfig)) {
-            Log.e("BionicProgramLauncherComponent", "Could not write the FEX container config; passing it as environment variables");
+        if (fexContainerConfig && !writeFexContainerConfig(envVars, fexConfig)) {
             for (String name : fexConfig) {
                 if (!envVars.has(name)) envVars.put(name, fexConfig.get(name));
             }
+            // A Config.json of the user's or at another location could turn code caching on.
+            if (!captureCodeMaps) envVars.put("FEX_ENABLECODECACHINGWIP", "0");
         }
 
         if (BuildConfig.XR_BUILD) {
