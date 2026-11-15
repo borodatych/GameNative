@@ -12,6 +12,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 /**
@@ -22,7 +23,8 @@ import timber.log.Timber
 object EaLicenseManager {
     data class License(val contentId: String, val machineHash: String, val startTime: String, val gameToken: String?, val signature: String, val blob: ByteArray)
 
-    private val client = OkHttpClient.Builder()
+    // Лицензии EA тоже ходят через общий DNS, чтобы не зависать на недоступном IPv6.
+    private val client = Net.http.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()

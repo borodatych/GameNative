@@ -11,6 +11,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import app.gamenative.utils.Net
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
@@ -119,7 +120,8 @@ data class RawGogApiResponse(
  */
 object GOGApiClient {
 
-    private val httpClient = OkHttpClient.Builder()
+    // Общий клиент несёт IPv4-first DNS; здесь остаются только таймауты GOG.
+    private val httpClient = Net.http.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()

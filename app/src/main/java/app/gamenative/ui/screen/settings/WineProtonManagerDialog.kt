@@ -53,6 +53,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.gamenative.R
 import app.gamenative.service.SteamService
+import app.gamenative.utils.DownloadMirrors
+import app.gamenative.utils.MirrorDownloads
 import app.gamenative.utils.Net
 import com.winlator.core.StringUtils
 import com.winlator.container.ContainerManager
@@ -1058,14 +1060,16 @@ private suspend fun loadWineProtonManifest(
     onError: suspend (String) -> Unit
 ) {
     try {
-        val manifestUrl = "https://downloads.gamenative.app/component-manifest.json"
-        val request = Request.Builder()
-            .url(manifestUrl)
-            .build()
-
-        val response = Net.http.newCall(request).execute()
-        if (response.isSuccessful) {
-            val jsonString = response.body?.string() ?: "{}"
+        // Манифест лежит на основном хосте, поэтому его тоже берём с первого живого зеркала.
+        val jsonString = MirrorDownloads.firstNonNull(DownloadMirrors.primaryUrl("component-manifest.json")) { url ->
+            val request = Request.Builder()
+                .url(url)
+                .build()
+            Net.http.newCall(request).execute().use { response ->
+                if (response.isSuccessful) response.body?.string() else null
+            }
+        }
+        if (jsonString != null) {
             val jsonObject = Json.decodeFromString<JsonObject>(jsonString)
 
             val manifest = jsonObject.entries
@@ -1078,9 +1082,9 @@ private suspend fun loadWineProtonManifest(
             }
         } else {
             withContext(Dispatchers.Main) {
-                onError("Failed to load manifest: ${response.code}")
+                onError("Failed to load manifest: no reachable source")
             }
-            Timber.w("WineProtonManagerDialog: Failed to load manifest HTTP=${response.code}")
+            Timber.w("WineProtonManagerDialog: Failed to load manifest from every source")
         }
     } catch (e: Exception) {
         withContext(Dispatchers.Main) {

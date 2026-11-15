@@ -1,6 +1,7 @@
 package app.gamenative.mods
 
 import app.gamenative.BuildConfig
+import app.gamenative.utils.Net
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -51,7 +52,8 @@ internal interface NexusOAuthRemote {
 }
 
 internal class NexusOAuthService(
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    // Редиректы запрещены осознанно (перехват кода), остальное наследуется от общего клиента.
+    private val client: OkHttpClient = Net.http.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
         .build(),

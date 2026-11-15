@@ -1,6 +1,7 @@
 package app.gamenative.data.gog
 
 import android.content.Context
+import app.gamenative.utils.MirrorDownloads
 import app.gamenative.utils.Net
 import java.io.File
 import java.util.zip.GZIPInputStream
@@ -81,24 +82,22 @@ object GogMapRepository {
         return reverse[gogId]
     }
 
-    private fun download(file: File): GogMap? {
-        return try {
-            val request = Request.Builder().url(MAP_URL).build()
+    // Карта лежит на основном хосте: перебираем зеркала, чтобы не остаться без неё на плохой сети.
+    private suspend fun download(file: File): GogMap? {
+        return MirrorDownloads.firstNonNull(MAP_URL) { url ->
+            val request = Request.Builder().url(url).build()
             Net.http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                val raw = response.body?.bytes() ?: return null
+                if (!response.isSuccessful) return@use null
+                val raw = response.body?.bytes() ?: return@use null
                 val text = if (raw.size >= 2 && (raw[0].toInt() and 0xff) == 0x1f && (raw[1].toInt() and 0xff) == 0x8b) {
                     GZIPInputStream(raw.inputStream()).readBytes().toString(Charsets.UTF_8)
                 } else {
                     String(raw, Charsets.UTF_8)
                 }
-                val map = parse(text) ?: return null
+                val map = parse(text) ?: return@use null
                 file.writeText(text)
                 map
             }
-        } catch (e: Exception) {
-            Timber.tag("GogMap").w(e, "GOG map download failed")
-            null
         }
     }
 

@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import app.gamenative.utils.Net
 import timber.log.Timber
 import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
@@ -31,7 +32,8 @@ object PicsAppInfo {
     private const val FALLBACK_APPINFO_HOST = "clientconfig.akamai.steamstatic.com"
 
     private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+        // Наследуем общий DNS и fastFallback; узкие таймауты нужны, чтобы не тормозить запуск.
+        Net.http.newBuilder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build()

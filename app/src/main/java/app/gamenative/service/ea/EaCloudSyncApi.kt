@@ -23,6 +23,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import org.xml.sax.InputSource
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 class EaCloudSyncException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -69,7 +70,8 @@ object EaCloudSyncApi {
     @Volatile
     internal var baseUrl: String = BASE_URL
 
-    private val client = OkHttpClient.Builder()
+    // Тот же общий DNS и fastFallback, что у остальных клиентов; специфика EA — только ниже.
+    private val client = Net.http.newBuilder()
         .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS)
         .callTimeout(60, TimeUnit.SECONDS)

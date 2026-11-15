@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 /** Handles native downloading of Amazon games. */
@@ -32,7 +33,8 @@ class AmazonDownloadManager @Inject constructor(
     private val amazonManager: AmazonManager,
 ) {
 
-    private val okHttpClient = OkHttpClient.Builder()
+    // Загрузки Amazon берут общий DNS и поведение соединений, сохраняя свой пул и таймауты.
+    private val okHttpClient = Net.http.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .connectionPool(okhttp3.ConnectionPool(16, 5, TimeUnit.MINUTES))

@@ -24,6 +24,7 @@ import okhttp3.Response
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import org.xml.sax.InputSource
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 class RockstarCloudException(message: String, val code: String? = null, val httpStatus: Int = 0, cause: Throwable? = null) :
@@ -78,7 +79,8 @@ object RockstarCloudApi {
     @Volatile
     internal var cloudHost: String = PRIMARY_HOST
 
-    private val client = OkHttpClient.Builder()
+    // Поверх общего клиента: тот же DNS и fastFallback, свои только протокол и таймауты.
+    private val client = Net.http.newBuilder()
         .protocols(listOf(Protocol.HTTP_1_1))
         .followRedirects(false)
         .followSslRedirects(false)
