@@ -3,6 +3,13 @@ package app.gamenative.utils.launchdependencies
 import android.content.Context
 import app.gamenative.data.GameSource
 import app.gamenative.service.SteamService
+import app.gamenative.steambridge.BridgeArch
+import app.gamenative.steambridge.BridgeArchiveCatalog
+import app.gamenative.steambridge.BridgeDescriptor
+import app.gamenative.steambridge.BridgeSelector
+import app.gamenative.steambridge.BridgeSource
+import app.gamenative.steambridge.InterfaceScanCache
+import app.gamenative.steambridge.SteamInterfaceScanner
 import app.gamenative.utils.LOADING_PROGRESS_UNKNOWN
 import com.winlator.container.Container
 import com.winlator.contents.ContentsManager
@@ -21,10 +28,10 @@ import java.io.File
  * launch path:
  *   - steam.exe (cached in filesDir; the Wine-side copy is refreshed each boot
  *     by extractSteamFiles in XServerScreen.kt)
- *   - lsteamclient archive for the active Proton variant; extracted to
- *     <winepath>/lib/wine/ so the .so siblings land in lib/wine/<arch>-unix/
- *     and the PE DLLs land in lib/wine/<arch>-windows/. The DLLs are then
- *     copied into the wineprefix's system32 / syswow64.
+ *   - мост lsteamclient: если дерево Proton поставляет свой, он не трогается;
+ *     иначе архив GameNative распаковывается в files/steambridges/<имя>/ и
+ *     копируется в <winepath>/lib/wine/, где Wine найдёт unix-.so рядом с PE.
+ *     PE-часть затем копируется в system32 / syswow64 префикса.
  *   - bionic Android libsteamclient.so (steam-androidarm64.tzst), extracted
  *     relative to the imagefs root so it lands at imagefs/usr/lib/.
  */
@@ -38,46 +45,10 @@ object BionicSteamAssetsDependency : LaunchDependency {
     private const val LSTEAMCLIENT_DLL = "lsteamclient.dll"
     private const val LIBSTEAMCLIENT_SO = "libsteamclient.so"
     private const val CACERT_PEM = "cacert.pem"
-
-    /**
-     * Exact bionic wine-version identifier -> lsteamclient archive. The unixlib
-     * ABI is wine-version-locked, so each Proton build ships its own archive.
-     * Identifiers are the installable set from manifest.json (proton) and
-     * R.array.bionic_wine_entries (proton-9). Add an entry when a Proton is added.
-     */
-    private val LSTEAMCLIENT_ARCHIVE_BY_WINE = mapOf(
-        "proton-9.0-x86_64" to "lsteamclient-x86_64-proton9.tzst",
-        "proton-9.0-arm64ec" to "lsteamclient-arm64ec-proton9.tzst",
-        "proton-10.0-4-x86_64-1" to "lsteamclient-x86_64-proton10.tzst",
-        "proton-10.0-arm64ec-2" to "lsteamclient-arm64ec-proton10.tzst",
-        "proton-10.0-4-arm64ec-1" to "lsteamclient-arm64ec-proton10.tzst",
-        "proton-11.0-1-x86_64-1" to "lsteamclient-x86_64-proton11.tzst",
-        "proton-11.0-1-arm64ec-1" to "lsteamclient-arm64ec-proton11.tzst",
-    )
-
-    /**
-     * Protons whose wcp already ships its own lsteamclient in lib/wine. No archive
-     * is overlaid (it would be a different build against the same ABI-locked unixlib);
-     * the tree's PE DLLs are still copied into the prefix every boot.
-     */
-    private val BUNDLED_LSTEAMCLIENT_WINE = setOf(
-        "proton-11.0-2-x86_64-1",
-        "proton-11.0-2-arm64ec-1",
-        "proton-11.0-2.3-arm64ec-1",
-        "proton-11.0-2.4-arm64ec-1",
-        "proton-11.0-2-x86_64-6",
-        "proton-11.0-2-arm64ec-6",
-        "proton-11.0-2-x86_64-7",
-        "proton-11.0-2-arm64ec-7",
-        "proton-11.0-2-x86_64-8",
-        "proton-11.0-2-arm64ec-8",
-        "proton-11.0-2-x86_64-9",
-        "proton-11.0-2-arm64ec-9",
-        "proton-11.0-2-x86_64-10",
-        "proton-11.0-2-arm64ec-10",
-        "proton-11.0-2-x86_64-11",
-        "proton-11.0-2-arm64ec-11",
-    )
+    private const val BRIDGE_CACHE_DIR = "steambridges"
+    private const val BRIDGE_CACHE_FILE = "cache.json"
+    private const val STEAMBRIDGE_MARKER = ".steambridge"
+    private const val EXTRA_STEAM_BRIDGE = "steamBridge"
 
     /**
      * Wine versions that ship a dedicated steam.exe helper. steam.exe is
@@ -111,25 +82,24 @@ object BionicSteamAssetsDependency : LaunchDependency {
     /** All steam.exe cache names we may have installed, for bionic-vs-real detection. */
     fun bionicSteamExeNames(): List<String> = listOf(STEAM_EXE, STEAM_EXE_PROTON11)
 
-    private fun lsteamclientArchiveFor(container: Container): String? {
-        val wineVersion = container.wineVersion
-        if (wineVersion in BUNDLED_LSTEAMCLIENT_WINE) return null
-        LSTEAMCLIENT_ARCHIVE_BY_WINE[wineVersion]?.let { return it }
-        val major = Regex("^proton-(\\d+)").find(wineVersion)?.groupValues?.get(1)?.toIntOrNull()
-            ?: return null
-        val arch = if (wineVersion.contains("arm64ec")) "arm64ec" else "x86_64"
-        val proton = when {
-            major <= 9 -> "proton9"
-            major == 10 -> "proton10"
-            else -> "proton11"
-        }
-        return "lsteamclient-$arch-$proton.tzst"
-    }
+    /** Мажор Proton: unixlib ABI привязан именно к нему, а не к точной сборке. */
+    private fun protonMajorOf(container: Container): Int? =
+        Regex("^proton-(\\d+)").find(container.wineVersion)?.groupValues?.get(1)?.toIntOrNull()
+
+    private fun bridgeArchOf(container: Container): BridgeArch =
+        BridgeArch.fromWineVersion(container.wineVersion)
+
+    /**
+     * Архив, которым можно закрыть отсутствие моста в дереве Proton.
+     * null — для этого мажора архива нет, а подставлять соседний нельзя.
+     */
+    private fun archiveBridgeFor(container: Container): BridgeArchiveCatalog.ArchiveBridge? =
+        protonMajorOf(container)?.let { BridgeArchiveCatalog.archiveFor(it, bridgeArchOf(container)) }
 
     private fun system32SrcArchDir(container: Container): String =
         if (container.wineVersion.contains("arm64ec")) "aarch64-windows" else "x86_64-windows"
 
-    /** `lib/wine/` inside the active Proton's install tree, where the archive extracts. */
+    /** `lib/wine/` активного дерева Proton: сюда кладётся PE и unix-часть моста. */
     private fun wineLibDir(context: Context, container: Container): File =
         File(wineInstallDir(context, container), "lib/wine")
 
@@ -138,6 +108,166 @@ object BionicSteamAssetsDependency : LaunchDependency {
 
     private fun treeSyswow64DllIn(wineLibDir: File): File =
         File(wineLibDir, "i386-windows/$LSTEAMCLIENT_DLL")
+
+    private fun steambridgeMarker(wineLibDir: File): File = File(wineLibDir, STEAMBRIDGE_MARKER)
+
+    /**
+     * Дерево само поставляет мост, если lsteamclient.dll лежит в нём и не помечен
+     * как распакованный нами. Проверка по файлу, а не по списку id: так любой
+     * Proton (включая импортированный) сохраняет свою более новую сборку.
+     */
+    private fun treeShipsOwnBridge(wineLibDir: File, container: Container): Boolean =
+        treeSystem32DllIn(wineLibDir, container).exists() && !steambridgeMarker(wineLibDir).exists()
+
+    private fun bridgeCacheDir(context: Context): File =
+        File(ImageFs.find(context).filesDir, BRIDGE_CACHE_DIR)
+
+    /** Каталог, куда распакован архив: мост живёт отдельно от дерева Proton. */
+    private fun bridgeStashDir(context: Context, archiveName: String): File =
+        File(bridgeCacheDir(context), archiveName.removeSuffix(".tzst"))
+
+    private fun bridgeStashDll(context: Context, container: Container, archiveName: String): File =
+        File(bridgeStashDir(context, archiveName), "${bridgeArchOf(container).windowsDir}/$LSTEAMCLIENT_DLL")
+
+    private fun interfaceCache(context: Context): InterfaceScanCache =
+        InterfaceScanCache(File(bridgeCacheDir(context), BRIDGE_CACHE_FILE))
+
+    /**
+     * Распаковывает архив в собственный кеш один раз.
+     * Распаковка идёт именно туда, а не в чужое дерево: так архив не может
+     * затереть более новый встроенный мост.
+     */
+    private fun ensureBridgeStashed(context: Context, container: Container, archiveName: String): File? {
+        val stashDir = bridgeStashDir(context, archiveName)
+        val stashDll = bridgeStashDll(context, container, archiveName)
+        if (stashDll.exists()) return stashDir
+
+        val archiveCache = File(ImageFs.find(context).filesDir, archiveName)
+        if (!archiveCache.exists()) {
+            Timber.e("lsteamclient archive $archiveName not downloaded; extract skipped")
+            return null
+        }
+        if (!TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, archiveCache, stashDir)) {
+            Timber.e("Failed to extract $archiveName into ${stashDir.absolutePath}")
+            return null
+        }
+        if (!stashDll.exists()) {
+            Timber.e("$archiveName has no ${stashDll.name} for ${container.wineVersion}")
+            return null
+        }
+        return stashDir
+    }
+
+    /**
+     * Копирует unix-часть и PE-часть моста рядом с Wine.
+     * Wine грузит unixlib по пути <arch>-unix/lsteamclient.so рядом с PE,
+     * поэтому убрать архивный мост из дерева целиком нельзя.
+     * Маркер фиксирует, что мост в дереве наш, а не из .wcp.
+     */
+    private fun installArchiveBridgeIntoTree(
+        context: Context,
+        container: Container,
+        wineLibDir: File,
+        archive: BridgeArchiveCatalog.ArchiveBridge,
+    ): Boolean {
+        val stashDir = ensureBridgeStashed(context, container, archive.archiveName) ?: return false
+        wineLibDir.mkdirs()
+        if (!FileUtils.copy(stashDir, wineLibDir)) {
+            Timber.e("Failed to copy ${archive.archiveName} bridge into ${wineLibDir.absolutePath}")
+            return false
+        }
+        steambridgeMarker(wineLibDir).writeText(
+            "archive=${archive.archiveName}\nmajor=${archive.protonMajor}\narch=${archive.arch.wineName}\n",
+        )
+        return true
+    }
+
+    /** Встроенный мост дерева либо уже распакованный архивный — что сейчас реально лежит в lib/wine. */
+    private fun bridgeDescriptorFor(
+        context: Context,
+        container: Container,
+        wineLibDir: File,
+    ): BridgeDescriptor? {
+        val major = protonMajorOf(container) ?: return null
+        val arch = bridgeArchOf(container)
+        val treeDll = treeSystem32DllIn(wineLibDir, container)
+        if (!treeDll.exists()) return null
+
+        val archive = archiveBridgeFor(container)
+        val managedArchive = if (steambridgeMarker(wineLibDir).exists()) archive else null
+        val source = if (managedArchive != null) BridgeSource.ARCHIVE else BridgeSource.BUNDLED_IN_PROTON
+        val id = managedArchive?.id ?: "bundled:proton$major:${arch.wineName}"
+        val label = managedArchive?.label ?: "Proton ${container.wineVersion} built-in bridge"
+        return BridgeDescriptor(
+            id = id,
+            protonMajor = major,
+            arch = arch,
+            source = source,
+            location = treeDll.absolutePath,
+            interfaces = interfaceCache(context).interfacesOf(treeDll),
+            label = label,
+        )
+    }
+
+    /** Интерфейсы, которые запрашивает сама игра (steam_api*.dll в её каталоге). */
+    private fun requiredInterfacesOf(context: Context, gameDir: File?): Set<String> {
+        if (gameDir == null || !gameDir.isDirectory) return emptySet()
+        val dlls = SteamInterfaceScanner.findSteamApiDlls(gameDir)
+        if (dlls.isEmpty()) return emptySet()
+        val cache = interfaceCache(context)
+        val result = HashSet<String>()
+        for (dll in dlls) result.addAll(cache.interfacesOf(dll))
+        return result
+    }
+
+    /** Единственное место, где решается, какой мост получит игра; UI позже будет менять только override. */
+    private fun logBridgeDecision(context: Context, container: Container, gameDir: File?) {
+        val libDir = wineLibDir(context, container)
+        val arch = bridgeArchOf(container)
+        val major = protonMajorOf(container) ?: run {
+            Timber.w("Steam bridge: ${container.wineVersion} has no Proton major, selection skipped")
+            return
+        }
+        val candidates = listOfNotNull(bridgeDescriptorFor(context, container, libDir))
+        val required = requiredInterfacesOf(context, gameDir)
+        val selection = BridgeSelector.select(
+            protonMajor = major,
+            arch = arch,
+            requiredInterfaces = required,
+            candidates = candidates,
+            overrideId = container.getExtra(EXTRA_STEAM_BRIDGE, ""),
+        )
+        if (selection.overrideIgnoredReason != null) {
+            Timber.w("Steam bridge: override ignored: ${selection.overrideIgnoredReason}")
+        }
+        val chosen = selection.chosen
+        if (chosen == null) {
+            Timber.w("Steam bridge: none chosen for Proton $major ${arch.wineName} (${selection.reason})")
+            return
+        }
+        Timber.i(
+            "Steam bridge: chosen ${chosen.id} [${chosen.source}] label=${chosen.label} " +
+                "required=${required.size} supported=${chosen.interfaces.size} reason=${selection.reason}",
+        )
+        if (selection.missingInterfaces.isNotEmpty()) {
+            Timber.w("Steam bridge: missing interfaces ${selection.missingInterfaces.sorted()}")
+        }
+    }
+
+    private fun copyBridgeDllsIntoPrefix(container: Container, wineLibDir: File) {
+        val sys32Src = treeSystem32DllIn(wineLibDir, container)
+        val sysWowSrc = treeSyswow64DllIn(wineLibDir)
+        val dstSystem32 = system32Dll(container)
+        val dstSyswow64 = syswow64Dll(container)
+        dstSystem32.parentFile?.mkdirs()
+        dstSyswow64.parentFile?.mkdirs()
+        if (!FileUtils.copy(sys32Src, dstSystem32)) {
+            Timber.e("Failed to copy ${sys32Src.absolutePath} to ${dstSystem32.absolutePath}")
+        }
+        if (!FileUtils.copy(sysWowSrc, dstSyswow64)) {
+            Timber.e("Failed to copy ${sysWowSrc.absolutePath} to ${dstSyswow64.absolutePath}")
+        }
+    }
 
     /**
      * Resolves the actual Wine/Proton install directory for the container.
@@ -176,41 +306,26 @@ object BionicSteamAssetsDependency : LaunchDependency {
     }
 
     /**
-     * Extracts the active Proton's lsteamclient archive (downloaded by [install])
-     * into that Proton's install tree, then copies the PE DLLs into the container
-     * prefix (system32 + syswow64). Run every boot and always overwrites, so
-     * switching a container's Proton version can never leave a stale, ABI-
-     * mismatched lsteamclient behind. No-op for wine versions without a bundled
-     * lsteamclient, or if the archive hasn't been downloaded yet.
+     * Готовит мост к запуску: подкладывает архивный мост, только если дерево
+     * Proton не поставляет свой, копирует PE-часть в префикс, затем выбирает
+     * мост под интерфейсы игры и логирует решение.
+     * Запускается каждый boot, чтобы смена Proton не оставила чужой ABI.
      */
-    fun extractLsteamclientIntoPrefix(context: Context, container: Container) {
-        val archive = lsteamclientArchiveFor(container)
-        if (archive == null && container.wineVersion !in BUNDLED_LSTEAMCLIENT_WINE) return
+    fun applyLsteamclientForLaunch(context: Context, container: Container, gameDir: File?) {
         val libDir = wineLibDir(context, container)
-        if (archive != null) {
-            val archiveCache = File(ImageFs.find(context).filesDir, archive)
-            if (!archiveCache.exists()) {
-                Timber.e("lsteamclient archive $archive not downloaded; extract skipped")
+        if (treeShipsOwnBridge(libDir, container)) {
+            // Встроенный мост не трогаем: архив того же мажора может быть старше.
+            Timber.i("Steam bridge: ${container.wineVersion} ships its own lsteamclient, archive skipped")
+        } else {
+            val archive = archiveBridgeFor(container)
+            if (archive == null) {
+                Timber.e("Steam bridge: no archive for ${container.wineVersion}, bridge not installed")
                 return
             }
-            libDir.mkdirs()
-            if (!TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, archiveCache, libDir)) {
-                Timber.e("Failed to extract $archive into ${libDir.absolutePath}")
-                return
-            }
+            if (!installArchiveBridgeIntoTree(context, container, libDir, archive)) return
         }
-        val sys32Src = treeSystem32DllIn(libDir, container)
-        val sysWowSrc = treeSyswow64DllIn(libDir)
-        val dstSystem32 = system32Dll(container)
-        val dstSyswow64 = syswow64Dll(container)
-        dstSystem32.parentFile?.mkdirs()
-        dstSyswow64.parentFile?.mkdirs()
-        if (!FileUtils.copy(sys32Src, dstSystem32)) {
-            Timber.e("Failed to copy ${sys32Src.absolutePath} to ${dstSystem32.absolutePath}")
-        }
-        if (!FileUtils.copy(sysWowSrc, dstSyswow64)) {
-            Timber.e("Failed to copy ${sysWowSrc.absolutePath} to ${dstSyswow64.absolutePath}")
-        }
+        copyBridgeDllsIntoPrefix(container, libDir)
+        logBridgeDecision(context, container, gameDir)
     }
 
     override fun appliesTo(container: Container, gameSource: GameSource, gameId: Int): Boolean =
@@ -223,11 +338,13 @@ object BionicSteamAssetsDependency : LaunchDependency {
         if (!File(filesDir, CACERT_PEM).exists()) return false
         if (!File(filesDir, STEAMCLIENT_DLLS_ARCHIVE).exists()) return false
         if (!bionicSteamInstalled(imageFs)) return false
-        // Only ensures the archive is downloaded. The extract into the Proton tree
-        // + copy into the prefix happen every boot in extractLsteamclientIntoPrefix
-        // (always overwriting), so they aren't cached here.
-        val lsteamclientArchive = lsteamclientArchiveFor(container)
-        if (lsteamclientArchive != null && !File(filesDir, lsteamclientArchive).exists()) return false
+        // Архив нужен только дереву без своего моста; распаковка и копирование
+        // в префикс выполняются каждый boot в applyLsteamclientForLaunch.
+        val libDir = wineLibDir(context, container)
+        if (!treeShipsOwnBridge(libDir, container)) {
+            val archive = archiveBridgeFor(container)
+            if (archive != null && !File(filesDir, archive.archiveName).exists()) return false
+        }
         return true
     }
 
@@ -285,10 +402,10 @@ object BionicSteamAssetsDependency : LaunchDependency {
             }
         }
 
-        // 2/3. Download the lsteamclient archive for the active Proton variant. The
-        // extract into the Proton tree + copy into the prefix happen every boot in
-        // extractLsteamclientIntoPrefix (always overwriting), not here.
-        val lsteamclientArchive = lsteamclientArchiveFor(container)
+        // 2/3. Архив качаем только дереву без своего моста, иначе он затрёт
+        // встроенный мост Proton при распаковке.
+        val treeHasOwnBridge = treeShipsOwnBridge(wineLibDir(context, container), container)
+        val lsteamclientArchive = if (treeHasOwnBridge) null else archiveBridgeFor(container)?.archiveName
         if (lsteamclientArchive != null) {
             val archiveCache = File(filesDir, lsteamclientArchive)
             if (!withContext(Dispatchers.IO) { archiveCache.exists() }) {
