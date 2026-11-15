@@ -174,8 +174,12 @@ object SteamUtils {
         }
     }
 
+    // Таймаут чтения считается между порциями данных, а не на весь файл:
+    // идущая загрузка его не задевает, а зависшее соединение отваливается и уступает следующему зеркалу
+    private const val DOWNLOAD_STALL_TIMEOUT_SECONDS = 20L
+
     internal val http = Net.http.newBuilder()
-        .readTimeout(5, TimeUnit.MINUTES)
+        .readTimeout(DOWNLOAD_STALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .protocols(listOf(Protocol.HTTP_1_1))
         .build()
