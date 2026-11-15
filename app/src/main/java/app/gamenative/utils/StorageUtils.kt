@@ -186,7 +186,8 @@ object StorageUtils {
         return result
     }
 
-    private const val PUBLIC_INSTALL_DIR_NAME = "GameNative"
+    // Своя папка в общей памяти, чтобы ThorHub не делил игры и экспорт с установленным рядом GameNative
+    const val PUBLIC_INSTALL_DIR_NAME = "ThorHub"
 
     /**
      * Maps an app-specific dir (<volume>/Android/data/<pkg>/files) to a public install root

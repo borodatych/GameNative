@@ -1150,7 +1150,7 @@ class SteamAppScreen : BaseAppScreen() {
                 scope.launch {
                     showMoveDialog = true
                     StorageUtils.moveGamesFromOldPath(
-                        Paths.get(Environment.getExternalStorageDirectory().absolutePath, "GameNative", "Steam").pathString,
+                        Paths.get(Environment.getExternalStorageDirectory().absolutePath, StorageUtils.PUBLIC_INSTALL_DIR_NAME, "Steam").pathString,
                         oldGamesDirectory,
                         onProgressUpdate = { currentFile, fileProgress, movedFiles, totalFiles ->
                             current = currentFile

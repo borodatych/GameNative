@@ -24,7 +24,7 @@ import timber.log.Timber
 object ContainerFileExporter {
     private const val COPY_BUFFER_SIZE = 256 * 1024
     private const val DEFAULT_MIME_TYPE = "application/octet-stream"
-    private const val EXPORT_PARENT = "GameNative"
+    private const val EXPORT_PARENT = StorageUtils.PUBLIC_INSTALL_DIR_NAME
 
     data class ExportResult(val copied: Int, val failed: List<String>, val destinationLabel: String)
 
