@@ -63,15 +63,33 @@ public class Container {
     public static final Set<String> REDIST_WINCOMPONENTS = Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
             "vcrun2005", "vcrun2008", "vcrun2012", "vcrun2013", "vcrun2022", "xaudio", "physx")));
     public static final String FALLBACK_WINCOMPONENTS = "direct3d=1,directsound=1,directinput8=0,directinput=0,directmusic=1,directshow=1,directplay=1,vcrun2010=1,wmdecoder=1,opengl=0";
-    public static final String[] MEDIACONV_ENV_VARS = {
-            "MEDIACONV_AUDIO_DUMP_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/audio.dmp",
-            "MEDIACONV_VIDEO_DUMP_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/video.dmp",
-            "MEDIACONV_VIDEO_TRANSCODED_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/transcoded.mkv",
-            "MEDIACONV_AUDIO_TRANSCODED_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/transcoded.wav",
-            "MEDIACONV_BLANK_AUDIO_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/blank.wav",
-            "MEDIACONV_BLANK_VIDEO_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/blank.mkv",
-    };
-    public static final String DEFAULT_DRIVES = "D:"+Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)+"E:/data/data/app.gamenative/storage";
+    // Раньше пути ниже были прошиты под пакет app.gamenative.
+    // Форк ставится отдельным приложением со своим applicationId, поэтому каталог данных считаем в рантайме.
+    // BuildConfig.APPLICATION_ID уже содержит реальный id вместе с суффиксом сборки (.gold и т.п.).
+    // /data/data/<id> резолвится через симлинк /data/user/0/<id>, поэтому путь годится для любого пользователя.
+    public static String getAppDataDir() {
+        return "/data/data/" + app.gamenative.BuildConfig.APPLICATION_ID;
+    }
+
+    // Метод вместо константы: значение зависит от установленного пакета и не может быть static final.
+    public static String[] getMediaConvEnvVars() {
+        String homeDir = getAppDataDir() + "/files/imagefs" + ImageFs.HOME_PATH;
+        return new String[] {
+                "MEDIACONV_AUDIO_DUMP_FILE=" + homeDir + "/audio.dmp",
+                "MEDIACONV_VIDEO_DUMP_FILE=" + homeDir + "/video.dmp",
+                "MEDIACONV_VIDEO_TRANSCODED_FILE=" + homeDir + "/transcoded.mkv",
+                "MEDIACONV_AUDIO_TRANSCODED_FILE=" + homeDir + "/transcoded.wav",
+                "MEDIACONV_BLANK_AUDIO_FILE=" + homeDir + "/blank.wav",
+                "MEDIACONV_BLANK_VIDEO_FILE=" + homeDir + "/blank.mkv",
+        };
+    }
+
+    // Драйв E: смотрит в приватный каталог storage текущего пакета.
+    // Тоже метод, а не константа, по той же причине — путь зависит от пакета.
+    public static String getDefaultDrives() {
+        return "D:"+Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                +"E:"+getAppDataDir()+"/storage";
+    }
     public static final String DEFAULT_VARIANT = DefaultVersion.VARIANT;
     public static final String DEFAULT_WINE_VERSION = DefaultVersion.WINE_VERSION;
     public static final byte STARTUP_SELECTION_NORMAL = 0;
@@ -109,7 +127,7 @@ public class Container {
     private boolean pulseaudioLowLatency = false;
     /** Exposes the Android microphone to Wine/Proton as a capture device. Opt-in, off by default. */
     private boolean micEnabled = false;
-    private String drives = DEFAULT_DRIVES;
+    private String drives = getDefaultDrives();
     private String wineVersion = WineInfo.MAIN_WINE_VERSION.identifier();
     private boolean showFPS;
     private boolean launchImmersiveMode = app.gamenative.BuildConfig.XR_BUILD;
@@ -384,7 +402,16 @@ public class Container {
     }
 
     public void setDrives(String drives) {
-        this.drives = drives;
+        this.drives = normalizeDrives(drives);
+    }
+
+    // Контейнер мог быть создан другим пакетом (upstream GameNative), и тогда внутри лежит чужой путь данных.
+    // Такой путь не существует для форка, поэтому переписываем его на каталог текущего пакета.
+    // Правим при загрузке, чтобы следующее сохранение записало уже корректное значение.
+    private static String normalizeDrives(String drives) {
+        if (drives == null) return null;
+        // Регулярка покрывает оба варианта, где Android хранит данные приложения.
+        return drives.replaceAll("/data/(?:data|user/\\d+)/[A-Za-z0-9_.]+/", getAppDataDir()+"/");
     }
 
     public String getLC_ALL() {

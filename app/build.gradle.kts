@@ -56,7 +56,9 @@ android {
     }
 
     defaultConfig {
-        applicationId = "app.gamenative"
+        // Свой applicationId, чтобы форк ставился рядом с upstream GameNative, а не поверх него.
+        // namespace и пакеты Kotlin/Java не трогаем: так проще мержить апстрим.
+        applicationId = "app.thorhub"
 
         minSdk = 26
 

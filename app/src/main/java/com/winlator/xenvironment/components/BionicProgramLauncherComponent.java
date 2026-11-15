@@ -247,15 +247,18 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         final int MAX_PLAYERS = 4;
 
+        // Каталог данных зависит от пакета, поэтому корень imagefs берём у текущей установки.
+        ImageFs memImageFs = ImageFs.find(environment.getContext());
+        File memTmpDir = new File(memImageFs.getRootDir(), "/tmp");
         // Get the number of enabled players directly from ControllerManager.
         for (int i = 0; i < MAX_PLAYERS; i++) {
             String memPath;
             if (i == 0) {
                 // Player 1 uses the original, non-numbered path that is known to work.
-                memPath = "/data/data/app.gamenative/files/imagefs/tmp/gamepad.mem";
+                memPath = new File(memTmpDir, "gamepad.mem").getPath();
             } else {
                 // Players 2, 3, 4 use a 1-based index.
-                memPath = "/data/data/app.gamenative/files/imagefs/tmp/gamepad" + i + ".mem";
+                memPath = new File(memTmpDir, "gamepad" + i + ".mem").getPath();
             }
 
             File memFile = new File(memPath);
@@ -307,6 +310,9 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         // Setting up essential environment variables for Wine
         envVars.put("HOME", imageFs.home_path);
+        // Патченный Proton форка строит drive Z: и ищет libsteamclient.so по этой переменной.
+        // Значение — абсолютный путь к корню imagefs со слэшем на конце, для любого пакета.
+        envVars.put("WINE_ANDROID_IMAGEFS", rootDir.getPath() + "/");
         envVars.put("USER", ImageFs.USER);
         envVars.put("TMPDIR", rootDir.getPath() + "/usr/tmp");
         new File(imageFs.home_path + "/.wine/drive_c" + rootDir.getPath() + "/usr/tmp").mkdirs();

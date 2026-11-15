@@ -242,7 +242,7 @@ object IntentLaunchManager {
             },
             audioDriver = if (json.has("audioDriver")) json.getString("audioDriver") else Container.DEFAULT_AUDIO_DRIVER,
             wincomponents = if (json.has("wincomponents")) json.getString("wincomponents") else Container.DEFAULT_WINCOMPONENTS,
-            drives = if (json.has("drives")) json.getString("drives") else Container.DEFAULT_DRIVES,
+            drives = if (json.has("drives")) json.getString("drives") else Container.getDefaultDrives(),
             execArgs = if (json.has("execArgs")) json.getString("execArgs") else "",
             executablePath = if (json.has("executablePath")) json.getString("executablePath") else "",
             installPath = if (json.has("installPath")) json.getString("installPath") else "",
@@ -327,7 +327,7 @@ object IntentLaunchManager {
             } else {
                 base.wincomponents
             },
-            drives = if (override.drives != Container.DEFAULT_DRIVES) override.drives else base.drives,
+            drives = if (override.drives != Container.getDefaultDrives()) override.drives else base.drives,
             execArgs = override.execArgs.ifEmpty { base.execArgs },
             executablePath = override.executablePath.ifEmpty { base.executablePath },
             installPath = override.installPath.ifEmpty { base.installPath },

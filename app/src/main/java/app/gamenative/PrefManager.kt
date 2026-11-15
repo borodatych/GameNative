@@ -447,7 +447,7 @@ object PrefManager {
 
     private val DRIVES = stringPreferencesKey("drives")
     var drives: String
-        get() = getPref(DRIVES, Container.DEFAULT_DRIVES)
+        get() = getPref(DRIVES, Container.getDefaultDrives())
         set(value) {
             setPref(DRIVES, value)
         }
