@@ -28,6 +28,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,7 +65,7 @@ import java.util.Locale
 fun EpicGameManagerDialog(
     visible: Boolean,
     onGetDisplayInfo: @Composable (Context) -> GameDisplayInfo,
-    onInstall: (List<Int>) -> Unit,
+    onInstall: (List<Int>, String) -> Unit,
     onDismissRequest: () -> Unit
 ) {
     val context = LocalContext.current
@@ -75,6 +76,24 @@ fun EpicGameManagerDialog(
 
     val displayInfo = onGetDisplayInfo(context)
     val gameId = displayInfo.gameId
+
+    // Контейнер мог сохранить язык раньше; иначе берём язык по умолчанию из настроек.
+    val initialLanguage = remember(gameId) {
+        runCatching {
+            app.gamenative.utils.ContainerUtils.getContainer(context, displayInfo.appId).language
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: app.gamenative.PrefManager.defaultGameLanguage
+    }
+    // Epic не отдаёт список языков игры до манифеста, поэтому предлагаем весь каталог.
+    val selectedLanguage = remember(gameId) {
+        mutableStateOf(
+            app.gamenative.utils.GameLanguages.preselected(
+                initialLanguage,
+                app.gamenative.utils.GameLanguages.CODES,
+            ),
+        )
+    }
+    val languagePickerOpen = remember { mutableStateOf(false) }
 
     LaunchedEffect(visible) {
         scrollState.animateScrollTo(0)
@@ -272,6 +291,42 @@ fun EpicGameManagerDialog(
                         Column(
                             modifier = Modifier.fillMaxWidth()
                         ) {
+                            // Язык влияет на теги установки в манифесте, поэтому выбор стоит
+                            // перед списком DLC.
+                            ListItem(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { languagePickerOpen.value = true },
+                                headlineContent = { Text(text = stringResource(R.string.language)) },
+                                supportingContent = {
+                                    Text(
+                                        text = app.gamenative.utils.GameLanguages
+                                            .displayName(selectedLanguage.value),
+                                    )
+                                },
+                            )
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                            )
+                            SingleChoiceDialog(
+                                openDialog = languagePickerOpen.value,
+                                icon = null,
+                                iconDescription = null,
+                                title = stringResource(R.string.language),
+                                items = app.gamenative.utils.GameLanguages.CODES
+                                    .map { app.gamenative.utils.GameLanguages.displayName(it) },
+                                currentItem = app.gamenative.utils.GameLanguages.CODES
+                                    .indexOf(selectedLanguage.value).coerceAtLeast(0),
+                                onSelected = { index ->
+                                    app.gamenative.utils.GameLanguages.CODES
+                                        .getOrNull(index)?.let { selectedLanguage.value = it }
+                                    languagePickerOpen.value = false
+                                },
+                                onDismiss = { languagePickerOpen.value = false },
+                            )
+
                             allDownloadableGames.forEach { game ->
                                 val gameIdValue = game.id ?: 0
                                 val checked = selectedGameIds[gameIdValue] ?: false
@@ -349,7 +404,7 @@ fun EpicGameManagerDialog(
                                             .filter { it.value }
                                             .keys
                                             .toList()
-                                        onInstall(selectedIds)
+                                        onInstall(selectedIds, selectedLanguage.value)
                                     }
                                 ) {
                                     Text(stringResource(R.string.install))

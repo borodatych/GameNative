@@ -97,6 +97,17 @@ object GameLanguages {
     }
 
     /**
+     * Нужно ли спросить про повторную загрузку после сохранения настроек контейнера.
+     * Смена языка у неустановленной игры ничего не качает: файлов ещё нет.
+     * Сравнение точное, как и раньше в saveContainerConfig: регистр кодов всегда нижний.
+     */
+    fun shouldPromptForDownload(
+        installed: Boolean,
+        previousLanguage: String,
+        newLanguage: String,
+    ): Boolean = installed && previousLanguage != newLanguage
+
+    /**
      * Selection the picker should open with: the wanted language when the game ships it, else
      * English, else the first supported one. Without this the picker could show a language whose
      * files the store will silently replace with English.

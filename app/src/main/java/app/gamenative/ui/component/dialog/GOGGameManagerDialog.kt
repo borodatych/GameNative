@@ -73,8 +73,8 @@ fun GOGGameManagerDialog(
     isInstalled: Boolean,
     onGetDisplayInfo: @Composable (Context) -> GameDisplayInfo,
     onGetLanguage: () -> String,
-    onNoDlc: () -> Unit,
-    onInstall: (Set<String>) -> Unit,
+    onNoDlc: (String) -> Unit,
+    onInstall: (Set<String>, String) -> Unit,
     onDismissRequest: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -91,13 +91,34 @@ fun GOGGameManagerDialog(
     var options by remember { mutableStateOf<List<GogDlcOption>>(emptyList()) }
     val selectedIds = remember { mutableStateMapOf<String, Boolean>() }
 
-    LaunchedEffect(visible, reloadKey) {
+    // Контейнер уже хранит выбор пользователя; по умолчанию он равен языку по умолчанию.
+    val selectedLanguage = remember { mutableStateOf(onGetLanguage()) }
+    var supportedLanguages by remember { mutableStateOf<List<String>>(emptyList()) }
+    val languagePickerOpen = remember { mutableStateOf(false) }
+
+    LaunchedEffect(visible, reloadKey, selectedLanguage.value) {
         if (!visible) return@LaunchedEffect
         loading = true
         loadError = null
         scrollState.animateScrollTo(0)
 
-        val (game, space, result) = withContext(Dispatchers.IO) {
+        val game = withContext(Dispatchers.IO) { GOGService.getGOGGameOf(gameId) }
+        baseGame = game
+        // Каталог продукта загружен вместе с игрой, поэтому список языков бесплатный.
+        // Пустой список означает "неизвестно", и тогда показываем все языки.
+        val supported = app.gamenative.utils.GameLanguages.filterSupportedByStoreCodes(
+            game?.languages.orEmpty(),
+            GOGConstants.CONTAINER_LANGUAGE_TO_GOG_CODES,
+        ).ifEmpty { app.gamenative.utils.GameLanguages.CODES }
+        supportedLanguages = supported
+        val language = app.gamenative.utils.GameLanguages.preselected(selectedLanguage.value, supported)
+        // Если выбранного языка в продукте нет, сначала исправляем выбор и перезагружаем.
+        if (language != selectedLanguage.value) {
+            selectedLanguage.value = language
+            return@LaunchedEffect
+        }
+
+        val (space, result) = withContext(Dispatchers.IO) {
             val path = GOGService.getInstallPath(gameId) ?: GOGConstants.defaultGOGGamesPath
             val freeBytes = try {
                 StorageUtils.getAvailableSpace(path)
@@ -105,20 +126,19 @@ fun GOGGameManagerDialog(
                 0L
             }
             val dlcResult = try {
-                GOGService.getDlcOptions(context, gameId, onGetLanguage())
+                GOGService.getDlcOptions(context, gameId, language)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
-            Triple(GOGService.getGOGGameOf(gameId), freeBytes, dlcResult)
+            freeBytes to dlcResult
         }
 
-        baseGame = game
         availableBytes = space
         val loaded = result.getOrNull()
         if (loaded != null && loaded.isEmpty() && !isInstalled) {
-            onNoDlc()
+            onNoDlc(language)
             return@LaunchedEffect
         }
         options = loaded.orEmpty()
@@ -260,6 +280,45 @@ fun GOGGameManagerDialog(
                 Column(
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    // Язык стоит до DLC: от него зависят составы депотов и размеры ниже.
+                    val languageOptions = supportedLanguages.ifEmpty {
+                        app.gamenative.utils.GameLanguages.CODES
+                    }
+                    ListItem(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { languagePickerOpen.value = true },
+                        headlineContent = { Text(text = stringResource(R.string.language)) },
+                        supportingContent = {
+                            Text(
+                                text = app.gamenative.utils.GameLanguages
+                                    .displayName(selectedLanguage.value),
+                            )
+                        },
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                    )
+                    SingleChoiceDialog(
+                        openDialog = languagePickerOpen.value,
+                        icon = null,
+                        iconDescription = null,
+                        title = stringResource(R.string.language),
+                        items = languageOptions
+                            .map { app.gamenative.utils.GameLanguages.displayName(it) },
+                        currentItem = languageOptions
+                            .indexOf(selectedLanguage.value).coerceAtLeast(0),
+                        onSelected = { index ->
+                            languageOptions.getOrNull(index)?.let {
+                                selectedLanguage.value = it
+                            }
+                            languagePickerOpen.value = false
+                        },
+                        onDismiss = { languagePickerOpen.value = false },
+                    )
+
                     val retryMessage = loadError ?: unresolvedTitles.takeIf { it.isNotEmpty() }?.joinToString()
                     retryMessage?.let { error ->
                         Row(
@@ -364,7 +423,7 @@ fun GOGGameManagerDialog(
                                     .filter { it.installed || (it.isSelectable() && selectedIds[it.productId] == true) }
                                     .map { it.productId }
                                     .toSet()
-                                onInstall(dlcIds)
+                                onInstall(dlcIds, selectedLanguage.value)
                             }
                         ) {
                             Text(stringResource(R.string.install))

@@ -919,6 +919,9 @@
     <string name="exec_arguments">Exec Arguments</string>
     <string name="exec_arguments_example">Example: -dx11</string>
     <string name="language">Language</string>
+    <string name="language_redownload_title">Download files for %1$s?</string>
+    <string name="language_redownload_message">The game needs the store files for %1$s. Download them now?</string>
+    <string name="language_redownload_message_with_size">The game needs the store files for %1$s (%2$s). Download them now?</string>
     <string name="screen_size">Screen Size</string>
     <string name="width">Width</string>
     <string name="height">Height</string>

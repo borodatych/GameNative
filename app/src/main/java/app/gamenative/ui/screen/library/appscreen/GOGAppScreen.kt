@@ -28,6 +28,7 @@ import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.theme.ThemedAlertDialog
 import app.gamenative.utils.FormatUtils
 import app.gamenative.utils.CloudSaveBackupManager
+import app.gamenative.utils.GameLanguages
 import app.gamenative.utils.MarkerUtils
 import java.io.File
 import app.gamenative.ui.data.AppMenuOption
@@ -324,6 +325,7 @@ class GOGAppScreen : BaseAppScreen() {
     private fun performDownload(
         context: Context,
         libraryItem: LibraryItem,
+        language: String? = null,
         dlcIds: Set<String>? = null,
         onClickPlay: (Boolean) -> Unit,
     ) {
@@ -333,14 +335,21 @@ class GOGAppScreen : BaseAppScreen() {
             try {
                 val installPath = GOGService.getInstallPath(gameId)
                     ?: GOGConstants.getGameInstallPath(libraryItem.name)
-                val containerData = loadContainerData(context, libraryItem)
+                // Язык из диалога установки важнее сохранённого: пишем его в контейнер до старта,
+                // потому что фильтр депотов и запуск игры читают одно и то же значение.
+                val chosenLanguage = language ?: loadContainerData(context, libraryItem).language
+                app.gamenative.utils.ContainerUtils.ensureContainerLanguage(
+                    context,
+                    libraryItem.appId,
+                    chosenLanguage,
+                )
 
                 Timber.d("Downloading GOG game to: $installPath")
 
                 SnackbarManager.show("Starting download for ${libraryItem.name}...")
 
                 // Start download - GOGService will handle monitoring, database updates, verification, and events
-                val result = GOGService.downloadGame(context, gameId, installPath, containerData.language, dlcIds = dlcIds)
+                val result = GOGService.downloadGame(context, gameId, installPath, chosenLanguage, dlcIds = dlcIds)
 
                 if (result.isSuccess) {
                     Timber.i("GOG download started successfully for: $gameId")
@@ -476,9 +485,47 @@ class GOGAppScreen : BaseAppScreen() {
         app.gamenative.utils.ContainerUtils.applyToContainer(context, libraryItem.appId, config)
         Timber.tag(TAG).d("saveContainerConfig: saved container config for ${libraryItem.appId}")
 
-        if (previousLanguage != config.language) {
-            triggerGOGVerifyDownload(context, libraryItem, config.language)
+        // Конфиг уже сохранён: "Нет" в вопросе оставит только новый язык, без загрузки.
+        if (GameLanguages.shouldPromptForDownload(
+                installed = isInstalled(context, libraryItem),
+                previousLanguage = previousLanguage,
+                newLanguage = config.language,
+            )
+        ) {
+            showLanguageRedownloadPrompt(context, libraryItem, config.language)
         }
+    }
+
+    private fun showLanguageRedownloadPrompt(
+        context: Context,
+        libraryItem: LibraryItem,
+        language: String,
+    ) {
+        val name = GameLanguages.displayName(language)
+        // Размер загрузки уже лежит в БД игры, поэтому его можно показать без сети.
+        val downloadBytes = GOGService.getGOGGameOf(libraryItem.gameId.toString())
+            ?.downloadSize
+            ?.takeIf { it > 0L }
+        val message = if (downloadBytes != null) {
+            context.getString(
+                R.string.language_redownload_message_with_size,
+                name,
+                app.gamenative.utils.StorageUtils.formatBinarySize(downloadBytes),
+            )
+        } else {
+            context.getString(R.string.language_redownload_message, name)
+        }
+        showInstallDialog(
+            libraryItem.appId,
+            app.gamenative.ui.component.dialog.state.MessageDialogState(
+                visible = true,
+                type = app.gamenative.ui.enums.DialogType.LANGUAGE_REDOWNLOAD,
+                title = context.getString(R.string.language_redownload_title, name),
+                message = message,
+                confirmBtnText = context.getString(R.string.yes),
+                dismissBtnText = context.getString(R.string.no),
+            ),
+        )
     }
 
     private fun triggerGOGVerifyDownload(context: Context, libraryItem: LibraryItem, language: String) {
@@ -693,6 +740,8 @@ class GOGAppScreen : BaseAppScreen() {
 
         // Shared install dialog state (from BaseAppScreen)
         val appId = libraryItem.appId
+        // Язык, выбранный в менеджере игры: подтверждение установки не знает о нём само.
+        var pendingInstallLanguage by remember(appId) { mutableStateOf<String?>(null) }
         var installDialogState by remember(appId) {
             mutableStateOf(BaseAppScreen.getInstallDialogState(appId) ?: app.gamenative.ui.component.dialog.state.MessageDialogState(false))
         }
@@ -715,7 +764,7 @@ class GOGAppScreen : BaseAppScreen() {
                 app.gamenative.ui.enums.DialogType.INSTALL_APP -> {
                     {
                         BaseAppScreen.hideInstallDialog(appId)
-                        performDownload(context, libraryItem) {}
+                        performDownload(context, libraryItem, pendingInstallLanguage) {}
                     }
                 }
                 app.gamenative.ui.enums.DialogType.CANCEL_APP_DOWNLOAD -> {
@@ -768,6 +817,14 @@ class GOGAppScreen : BaseAppScreen() {
                         triggerGOGVerifyDownload(context, libraryItem, language)
                     }
                 }
+                app.gamenative.ui.enums.DialogType.LANGUAGE_REDOWNLOAD -> {
+                    {
+                        BaseAppScreen.hideInstallDialog(appId)
+                        // Язык уже сохранён в контейнере, поэтому просто повторяем прежний путь.
+                        val language = loadContainerData(context, libraryItem).language
+                        triggerGOGVerifyDownload(context, libraryItem, language)
+                    }
+                }
                 else -> null
             }
             app.gamenative.ui.component.dialog.MessageDialog(
@@ -790,13 +847,15 @@ class GOGAppScreen : BaseAppScreen() {
                     getGameDisplayInfo(displayContext, libraryItem)
                 },
                 onGetLanguage = { loadContainerData(context, libraryItem).language },
-                onNoDlc = {
+                onNoDlc = { language ->
                     hideGameManagerDialog(appId)
+                    // Запоминаем выбор: performDownload сохранит его до старта загрузки.
+                    pendingInstallLanguage = language
                     showGOGInstallConfirmationDialog(context, libraryItem)
                 },
-                onInstall = { dlcIds ->
+                onInstall = { dlcIds, language ->
                     hideGameManagerDialog(appId)
-                    performDownload(context, libraryItem, dlcIds = dlcIds) {}
+                    performDownload(context, libraryItem, language, dlcIds = dlcIds) {}
                 },
                 onDismissRequest = {
                     hideGameManagerDialog(appId)

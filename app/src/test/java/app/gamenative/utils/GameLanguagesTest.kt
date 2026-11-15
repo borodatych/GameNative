@@ -8,6 +8,8 @@ import app.gamenative.service.SteamService
 import java.util.EnumSet
 import java.util.Locale
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GameLanguagesTest {
@@ -83,6 +85,36 @@ class GameLanguagesTest {
         assertEquals("german", GameLanguages.preselected("french", listOf("german")))
         assertEquals("french", GameLanguages.preselected("french", emptyList()))
         assertEquals("english", GameLanguages.preselected("", emptyList()))
+    }
+
+    @Test
+    fun `gog product codes keep only languages the product ships`() {
+        // Коды продукта GOG приходят как en/de/pt_BR/zh-Hans и должны сойтись с таблицей GOG.
+        assertEquals(
+            listOf("schinese", "english", "german", "brazilian"),
+            GameLanguages.filterSupportedByStoreCodes(
+                listOf("en", "de", "pt_BR", "zh-Hans"),
+                app.gamenative.service.gog.GOGConstants.CONTAINER_LANGUAGE_TO_GOG_CODES,
+            ),
+        )
+    }
+
+    // -- Re-download prompt after a language change --
+
+    @Test
+    fun `installed game asks before downloading another language`() {
+        assertTrue(GameLanguages.shouldPromptForDownload(true, "english", "german"))
+    }
+
+    @Test
+    fun `installed game with the same language asks nothing`() {
+        assertFalse(GameLanguages.shouldPromptForDownload(true, "german", "german"))
+    }
+
+    @Test
+    fun `not installed game never asks to download language files`() {
+        // Файлов ещё нет: установка сама скачает выбранный язык.
+        assertFalse(GameLanguages.shouldPromptForDownload(false, "english", "german"))
     }
 
     @Test

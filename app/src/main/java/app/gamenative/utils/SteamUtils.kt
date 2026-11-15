@@ -1399,38 +1399,8 @@ object SteamUtils {
         if (Files.notExists(supportedLanguagesFile)) {
             Files.createFile(supportedLanguagesFile)
         }
-        val supportedLanguages = listOf(
-            "arabic",
-            "bulgarian",
-            "schinese",
-            "tchinese",
-            "czech",
-            "danish",
-            "dutch",
-            "english",
-            "finnish",
-            "french",
-            "german",
-            "greek",
-            "hungarian",
-            "italian",
-            "japanese",
-            "koreana",
-            "norwegian",
-            "polish",
-            "portuguese",
-            "brazilian",
-            "romanian",
-            "russian",
-            "spanish",
-            "latam",
-            "swedish",
-            "thai",
-            "turkish",
-            "ukrainian",
-            "vietnamese",
-        )
-        supportedLanguagesFile.toFile().writeText(supportedLanguages.joinToString("\n"))
+        // Список языков общий с контейнером: Steam читает этот файл при запуске игры.
+        supportedLanguagesFile.toFile().writeText(GameLanguages.CODES.joinToString("\n"))
     }
 
     /**
