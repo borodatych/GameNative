@@ -1134,6 +1134,20 @@ object ContainerUtils {
         return container
     }
 
+    /**
+     * Stores [language] on the game's container, creating the container when the game has none
+     * yet. The depot filter reads the language from the container before downloading and the
+     * game reads it again at launch, so both must come from the same value.
+     */
+    fun ensureContainerLanguage(context: Context, appId: String, language: String) {
+        if (language.isBlank()) return
+        val container = getOrCreateContainer(context, appId)
+        if (container.language != language) {
+            container.language = language
+            container.saveData()
+        }
+    }
+
     fun getOrCreateContainer(context: Context, appId: String): Container {
         val containerManager = ContainerManager(context)
 

@@ -663,6 +663,27 @@ fun SettingsGroupInterface(
             }
         }
 
+        // Applies to new downloads and containers; existing containers keep their own language.
+        var defaultGameLanguageIndex by rememberSaveable {
+            mutableStateOf(
+                app.gamenative.utils.GameLanguages.CODES
+                    .indexOf(PrefManager.defaultGameLanguage)
+                    .takeIf { it >= 0 } ?: 0,
+            )
+        }
+        SettingsListDropdown(
+            colors = settingsTileColorsAlt(),
+            title = { Text(text = stringResource(R.string.settings_default_game_language)) },
+            subtitle = { Text(text = stringResource(R.string.settings_default_game_language_subtitle)) },
+            value = defaultGameLanguageIndex,
+            items = app.gamenative.utils.GameLanguages.CODES
+                .map { app.gamenative.utils.GameLanguages.displayName(it) },
+            onItemSelected = { index ->
+                defaultGameLanguageIndex = index
+                PrefManager.defaultGameLanguage = app.gamenative.utils.GameLanguages.CODES[index]
+            },
+        )
+
         val ctx = LocalContext.current
         val sm = ctx.getSystemService(StorageManager::class.java)
 

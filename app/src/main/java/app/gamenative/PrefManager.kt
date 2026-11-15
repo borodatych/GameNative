@@ -753,9 +753,22 @@ object PrefManager {
             setPref(STARTUP_SELECTION, value)
         }
 
+    // Language new downloads and containers start with. Unset means "follow the device locale",
+    // so a Russian phone fetches Russian depots without visiting Settings first.
+    private val DEFAULT_GAME_LANGUAGE = stringPreferencesKey("default_game_language")
+    var defaultGameLanguage: String
+        get() = getPref(
+            DEFAULT_GAME_LANGUAGE,
+            app.gamenative.utils.GameLanguages.defaultGameLanguage(java.util.Locale.getDefault()),
+        )
+        set(value) {
+            setPref(DEFAULT_GAME_LANGUAGE, value)
+        }
+
     private val CONTAINER_LANGUAGE = stringPreferencesKey("container_language")
     var containerLanguage: String
-        get() = getPref(CONTAINER_LANGUAGE, "english")
+        // Only an explicitly saved value overrides the default game language.
+        get() = getPref(CONTAINER_LANGUAGE, defaultGameLanguage)
         set(value) {
             setPref(CONTAINER_LANGUAGE, value)
         }

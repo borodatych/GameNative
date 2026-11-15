@@ -3477,4 +3477,6 @@
     <string name="support_wait_stop">Stop</string>
     <string name="support_reply_ready_tap">Tap to read it.</string>
     <string name="support_notify_me">Notify me when the reply arrives</string>
+    <string name="settings_default_game_language">Default game language</string>
+    <string name="settings_default_game_language_subtitle">Used for new downloads and containers</string>
 </resources>

@@ -3373,4 +3373,6 @@ https://gamenative.app
     <string name="support_files_listing_sending">Отправка списка %1$s</string>
     <string name="support_files_listing_sent">Список отправлен (элементов: %1$d)</string>
     <string name="support_files_listing_failed">Не удалось отправить список %1$s. %2$s</string>
+    <string name="settings_default_game_language">Язык игр по умолчанию</string>
+    <string name="settings_default_game_language_subtitle">Используется для новых загрузок и контейнеров</string>
 </resources>

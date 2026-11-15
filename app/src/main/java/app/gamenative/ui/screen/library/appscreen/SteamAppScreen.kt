@@ -1525,7 +1525,7 @@ class SteamAppScreen : BaseAppScreen() {
                     return@GameManagerDialog getGameDisplayInfo(context, libraryItem)
                 },
                 branch = gameManagerDialogState.branch,
-                onInstall = { dlcAppIds ->
+                onInstallWithLanguage = { dlcAppIds, language ->
                     val branch = gameManagerDialogState.branch
                         ?: SteamService.getInstalledApp(gameId)?.branch
                         ?: "public"
@@ -1544,6 +1544,9 @@ class SteamAppScreen : BaseAppScreen() {
                             ConversionTracker.campaignAttribution(gameId),
                     )
                     CoroutineScope(Dispatchers.IO).launch {
+                        // Persist the choice before resolving depots: the filter reads the
+                        // language from the container and the game launches with it later.
+                        ContainerUtils.ensureContainerLanguage(context, libraryItem.appId, language)
                         SteamService.downloadApp(gameId, dlcAppIds, branch = branch, mode = SteamDownloadMode.INSTALL)
                     }
                 },
