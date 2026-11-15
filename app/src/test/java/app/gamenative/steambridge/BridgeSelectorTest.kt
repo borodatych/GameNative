@@ -10,10 +10,10 @@ import org.junit.Test
 class BridgeSelectorTest {
     private fun bridge(
         id: String,
+        vararg interfaces: String,
         major: Int = 11,
         arch: BridgeArch = BridgeArch.ARM64EC,
         source: BridgeSource = BridgeSource.ARCHIVE,
-        vararg interfaces: String,
     ) = BridgeDescriptor(
         id = id,
         protonMajor = major,
@@ -28,10 +28,7 @@ class BridgeSelectorTest {
 
     @Test
     fun compatibleOverrideWinsOverAutoSelection() {
-        val bundled = bridge(
-            "bundled", source = BridgeSource.BUNDLED_IN_PROTON,
-            "SteamUtils011", "SteamUser023", "SteamClient023",
-        )
+        val bundled = bridge("bundled", "SteamUtils011", "SteamUser023", "SteamClient023", source = BridgeSource.BUNDLED_IN_PROTON)
         val archive = bridge("archive", "SteamUtils011", "SteamUser023")
 
         val result = BridgeSelector.select(11, BridgeArch.ARM64EC, hogwartsRequest, listOf(bundled, archive), "archive")
@@ -56,8 +53,8 @@ class BridgeSelectorTest {
     @Test
     fun overrideFromAnotherProtonMajorIsIgnored() {
         // Мажор передаём позиционно: позиционные аргументы идут строго по порядку параметров.
-        val forProton10 = bridge("archive10", 10, BridgeArch.ARM64EC, BridgeSource.ARCHIVE, "SteamUtils011")
-        val forProton11 = bridge("archive11", 11, BridgeArch.ARM64EC, BridgeSource.ARCHIVE, "SteamUtils011")
+        val forProton10 = bridge("archive10", "SteamUtils011", major = 10, arch = BridgeArch.ARM64EC, source = BridgeSource.ARCHIVE)
+        val forProton11 = bridge("archive11", "SteamUtils011", major = 11, arch = BridgeArch.ARM64EC, source = BridgeSource.ARCHIVE)
 
         val result = BridgeSelector.select(
             11, BridgeArch.ARM64EC, hogwartsRequest, listOf(forProton10, forProton11), "archive10",
@@ -71,8 +68,8 @@ class BridgeSelectorTest {
 
     @Test
     fun overrideFromAnotherArchitectureIsIgnored() {
-        val x86 = bridge("x86", 11, BridgeArch.X86_64, BridgeSource.ARCHIVE, "SteamUtils011")
-        val arm = bridge("arm", 11, BridgeArch.ARM64EC, BridgeSource.ARCHIVE, "SteamUtils011")
+        val x86 = bridge("x86", "SteamUtils011", major = 11, arch = BridgeArch.X86_64, source = BridgeSource.ARCHIVE)
+        val arm = bridge("arm", "SteamUtils011", major = 11, arch = BridgeArch.ARM64EC, source = BridgeSource.ARCHIVE)
 
         val result = BridgeSelector.select(
             11, BridgeArch.ARM64EC, hogwartsRequest, listOf(x86, arm), "x86",
@@ -137,7 +134,7 @@ class BridgeSelectorTest {
     @Test
     fun bundledBridgeWinsTieWithArchive() {
         val archive = bridge("archive", "SteamUtils011", "SteamUser023")
-        val bundled = bridge("bundled", source = BridgeSource.BUNDLED_IN_PROTON, "SteamUtils011", "SteamUser023")
+        val bundled = bridge("bundled", "SteamUtils011", "SteamUser023", source = BridgeSource.BUNDLED_IN_PROTON)
 
         val result = BridgeSelector.select(11, BridgeArch.ARM64EC, hogwartsRequest, listOf(archive, bundled))
 
@@ -173,7 +170,7 @@ class BridgeSelectorTest {
 
     @Test
     fun noCompatibleCandidatesYieldsNoChoice() {
-        val forProton9 = bridge("old", 9, BridgeArch.ARM64EC, BridgeSource.ARCHIVE, "SteamUtils011")
+        val forProton9 = bridge("old", "SteamUtils011", major = 9, arch = BridgeArch.ARM64EC, source = BridgeSource.ARCHIVE)
 
         val result = BridgeSelector.select(11, BridgeArch.ARM64EC, hogwartsRequest, listOf(forProton9))
 
@@ -185,7 +182,7 @@ class BridgeSelectorTest {
     @Test
     fun emptyRequiredInterfacesPicksNewestCompatible() {
         val small = bridge("small", "SteamUtils011")
-        val big = bridge("big", source = BridgeSource.BUNDLED_IN_PROTON, "SteamUtils011", "SteamUser023")
+        val big = bridge("big", "SteamUtils011", "SteamUser023", source = BridgeSource.BUNDLED_IN_PROTON)
 
         val result = BridgeSelector.select(11, BridgeArch.ARM64EC, emptySet(), listOf(small, big))
 

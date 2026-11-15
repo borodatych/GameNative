@@ -2532,6 +2532,7 @@ fun XServerScreen(
                                     contentsManager,
                                     onExtractFileListener,
                                     gameSession = !bootToContainer,
+                                    appId = appId,
                                 )
                             }
                             if (isGamescopeSession) {
@@ -5938,6 +5939,7 @@ private suspend fun setupWineSystemFiles(
     contentsManager: ContentsManager,
     onExtractFileListener: OnExtractFileListener?,
     gameSession: Boolean,
+    appId: String,
 ) {
     val imageFs = ImageFs.find(context)
     val appVersion = AppUtils.getVersionCode(context).toString()

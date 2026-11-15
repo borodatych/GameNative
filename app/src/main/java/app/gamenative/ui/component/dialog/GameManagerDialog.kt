@@ -46,6 +46,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import app.gamenative.utils.GameLanguages
 import app.gamenative.BuildConfig
 import app.gamenative.R
 import app.gamenative.data.DepotInfo
@@ -139,9 +140,9 @@ fun GameManagerDialog(
 
         // Depot lists and sizes depend on the language, so they are rebuilt when it changes.
         val supported = withContext(Dispatchers.IO) {
-            SteamService.getAppInfoOf(gameId)?.let { app ->
-                app.gamenative.utils.GameLanguages.filterSupported(
-                    app.depots.values
+            SteamService.getAppInfoOf(gameId)?.let { steamApp ->
+                GameLanguages.filterSupported(
+                    steamApp.depots.values
                         .filter { it.dlcAppId == INVALID_APP_ID && it.isWindowsCompatible }
                         .map { it.language },
                 )
