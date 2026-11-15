@@ -6060,7 +6060,7 @@ private suspend fun setupWineSystemFiles(
     }
 
     if (container.isLaunchRealSteam || container.isLaunchBionicSteam) {
-        extractSteamFiles(context, container, onExtractFileListener)
+        extractSteamFiles(context, container, appId, onExtractFileListener)
     }
 
     // If bionic mode is off, scrub any bionic-installed files from a previous
@@ -6935,6 +6935,7 @@ private fun buildVkBasaltConfig(
 private fun extractSteamFiles(
     context: Context,
     container: Container,
+    appId: String,
     onExtractFileListener: OnExtractFileListener?,
 ) {
     val imageFs = ImageFs.find(context)
@@ -6993,9 +6994,12 @@ private fun extractSteamFiles(
             Timber.e(e, "Failed to copy cached steam.exe")
         }
 
-        // Re-extract the active Proton's lsteamclient into its tree + prefix every boot,
-        // so switching a container's Proton version can't leave a stale ABI-mismatched build.
-        BionicSteamAssetsDependency.extractLsteamclientIntoPrefix(context, container)
+        // Мост готовим каждый boot, чтобы смена Proton не оставила чужой ABI.
+        // Каталог игры нужен, чтобы сверить запрошенные ею интерфейсы Steam.
+        val bridgeGameDir = runCatching {
+            File(SteamService.getAppDirPath(ContainerUtils.extractGameIdFromContainerId(appId)))
+        }.getOrNull()
+        BionicSteamAssetsDependency.applyLsteamclientForLaunch(context, container, bridgeGameDir)
 
         try {
             val accountId = SteamService.userSteamId?.accountID?.toInt() ?: 0
