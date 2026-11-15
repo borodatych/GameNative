@@ -15,17 +15,31 @@ object GamescopePayload {
     const val ARCHIVE = "gamescope-gamenative-$VERSION.tzst"
     private const val STAMP = ".payload.version"
 
+    // Upstream-пакет, под который собран payload: его абсолютные пути зашиты в ELF.
+    private const val UPSTREAM_PKG = "app.gamenative"
+    private const val UPSTREAM_USER_PREFIX = "/data/user/0/$UPSTREAM_PKG/"
+    private const val UPSTREAM_DATA_PREFIX = "/data/data/$UPSTREAM_PKG/"
+
     fun directory(filesDir: File): File = GamescopeSettings.gamescopeDir(filesDir)
 
-    fun isReady(filesDir: File): Boolean {
+    /**
+     * Метка готовности payload'а.
+     *
+     * Пакет входит в метку, потому что путь к данным зашит в бинарники: установка под другим
+     * applicationId (и любая установка до появления правки) не готова, и `isReady` обязан
+     * вернуть false, чтобы payload переустановился и пути в файлах переписались.
+     */
+    internal fun stamp(packageName: String): String = "$VERSION+pkg:$packageName"
+
+    fun isReady(filesDir: File, packageName: String): Boolean {
         val dir = directory(filesDir)
         return File(dir, "bin").isDirectory &&
-            runCatching { File(dir, STAMP).readText().trim() }.getOrNull() == VERSION
+            runCatching { File(dir, STAMP).readText().trim() }.getOrNull() == stamp(packageName)
     }
 
     suspend fun ensure(context: Context, onProgress: (Float) -> Unit = {}): File = withContext(Dispatchers.IO) {
         val filesDir = context.filesDir
-        if (isReady(filesDir)) return@withContext directory(filesDir)
+        if (isReady(filesDir, context.packageName)) return@withContext directory(filesDir)
         val archive = File(filesDir, ARCHIVE)
         if (!archive.isFile || archive.length() == 0L) {
             archive.delete()
@@ -44,7 +58,7 @@ object GamescopePayload {
                 }
             }
         }
-        install(archive, filesDir)
+        install(archive, filesDir, context.packageName)
     }
 
     /** Whether this APK carries the payload, and if so, copy it out to [dest]. */
@@ -63,9 +77,9 @@ object GamescopePayload {
     }
 
     @Synchronized
-    internal fun install(archive: File, filesDir: File): File {
+    internal fun install(archive: File, filesDir: File, packageName: String): File {
         val target = directory(filesDir)
-        if (isReady(filesDir)) return target
+        if (isReady(filesDir, packageName)) return target
         val tempDir = File(target.parentFile, "${target.name}.tmp")
         AssetUtils.deleteTree(tempDir)
         tempDir.mkdirs()
@@ -74,7 +88,10 @@ object GamescopePayload {
             archive.delete()
             error("Failed to extract $ARCHIVE")
         }
-        File(tempDir, STAMP).writeText(VERSION)
+        // Пути в бинарниках указывают на upstream-пакет, поэтому до записи метки
+        // их надо переписать под наш applicationId.
+        patchNativePaths(tempDir, packageName)
+        File(tempDir, STAMP).writeText(stamp(packageName))
         AssetUtils.deleteTree(target)
         if (!tempDir.renameTo(target)) {
             AssetUtils.deleteTree(tempDir)
@@ -83,5 +100,43 @@ object GamescopePayload {
         archive.delete()
         Timber.i("Gamescope payload $VERSION ready at ${target.absolutePath}")
         return target
+    }
+
+    /**
+     * Переписывает зашитые пути `/data/.../app.gamenative/` на текущий applicationId.
+     *
+     * Xwayland ищет xkb-данные и бинарники по абсолютному пути, поэтому правка нужна
+     * во всех исполняемых файлах и библиотеках, а не только в gamescope.
+     */
+    private fun patchNativePaths(dir: File, packageName: String) {
+        // Обходим только то, что реально запускается: bin/ и разделяемые библиотеки.
+        val binaries = buildList {
+            File(dir, "bin").listFiles()?.filterTo(this) { it.isFile }
+            File(dir, "lib").listFiles()?.filterTo(this) { it.isFile && it.name.endsWith(".so") }
+        }
+        var replaced = 0
+        binaries.forEach { file ->
+            val bytes = runCatching { file.readBytes() }.getOrElse {
+                Timber.w(it, "Cannot read ${file.name}; its embedded paths stay untouched")
+                return@forEach
+            }
+            val count = NativePathPatcher.patchCStrings(
+                bytes,
+                UPSTREAM_USER_PREFIX,
+                "/data/user/0/$packageName/",
+            ) + NativePathPatcher.patchCStrings(
+                bytes,
+                UPSTREAM_DATA_PREFIX,
+                "/data/data/$packageName/",
+            )
+            if (count == 0) return@forEach
+            // Пишем поверх того же файла: его права и executable-бит при этом сохраняются.
+            val executable = file.canExecute()
+            file.writeBytes(bytes)
+            // На случай, если ФС не сохранила бит при перезаписи, возвращаем его явно.
+            if (executable && !file.canExecute()) file.setExecutable(true, false)
+            replaced += count
+        }
+        Timber.i("Patched $replaced upstream path(s) in gamescope payload for $packageName")
     }
 }

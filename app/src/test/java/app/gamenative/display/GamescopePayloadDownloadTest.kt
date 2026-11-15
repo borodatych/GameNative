@@ -77,7 +77,7 @@ class GamescopePayloadDownloadTest {
         assertTrue("the download reported no progress", progress.isNotEmpty())
         assertTrue("the download never completed", progress.max() > 0.99f)
 
-        val installed = GamescopePayload.install(archive, context.filesDir)
+        val installed = GamescopePayload.install(archive, context.filesDir, context.packageName)
 
         assertEquals(GamescopeSettings.gamescopeDir(context.filesDir), installed)
         assertTrue(
@@ -85,10 +85,10 @@ class GamescopePayloadDownloadTest {
             File(installed, "bin/gamescope").isFile,
         )
         assertEquals(
-            GamescopePayload.VERSION,
+            GamescopePayload.stamp(context.packageName),
             File(installed, ".payload.version").readText().trim(),
         )
-        assertTrue(GamescopePayload.isReady(context.filesDir))
+        assertTrue(GamescopePayload.isReady(context.filesDir, context.packageName))
         assertFalse(
             "the archive should not outlive the install",
             File(context.filesDir, GamescopePayload.ARCHIVE).exists(),
@@ -102,7 +102,7 @@ class GamescopePayloadDownloadTest {
         AssetUtils.deleteTree(dir)
         // An installed payload: the stamp and the directory the readiness check reads.
         File(dir, "bin").mkdirs()
-        File(dir, ".payload.version").writeText(GamescopePayload.VERSION)
+        File(dir, ".payload.version").writeText(GamescopePayload.stamp(context.packageName))
 
         val progress = mutableListOf<Float>()
         val installed = runBlocking { GamescopePayload.ensure(context) { progress.add(it) } }
@@ -110,6 +110,18 @@ class GamescopePayloadDownloadTest {
         assertEquals(dir, installed)
         assertTrue("a ready payload must not report download progress", progress.isEmpty())
         assertFalse(File(context.filesDir, GamescopePayload.ARCHIVE).exists())
+    }
+
+    @Test
+    fun anInstallFromBeforeThePathPatchIsNotReady() {
+        val context: Context = ApplicationProvider.getApplicationContext()
+        val dir = GamescopeSettings.gamescopeDir(context.filesDir)
+        AssetUtils.deleteTree(dir)
+        File(dir, "bin").mkdirs()
+        // The old stamp named only the version, so such an install carries the upstream paths.
+        File(dir, ".payload.version").writeText(GamescopePayload.VERSION)
+
+        assertFalse(GamescopePayload.isReady(context.filesDir, context.packageName))
     }
 
     /// The response of a `HEAD`, with the length the archive claims and the type it was served as.
