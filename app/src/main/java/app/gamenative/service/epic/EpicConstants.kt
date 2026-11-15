@@ -2,6 +2,8 @@ package app.gamenative.service.epic
 
 import android.net.Uri
 import app.gamenative.PrefManager
+import app.gamenative.utils.GamesRootPaths
+import app.gamenative.utils.StorageUtils
 import java.io.File
 import java.nio.file.Paths
 import java.security.SecureRandom
@@ -157,23 +159,26 @@ object EpicConstants {
     }
 
     /**
-     * External Epic games installation path
-     * {externalStoragePath}/Epic/games/
+     * Epic games inside the user-selected games root: <root>/Epic/games.
+     * Пустая строка, если корень не выбран: вызывающий код такие пути пропускает.
      */
     fun externalEpicGamesPath(): String {
-        val path = Paths.get(PrefManager.externalStoragePath, "Epic", "games").toString()
+        val root = PrefManager.gamesRootPath
+        if (root.isBlank()) return ""
+        val path = GamesRootPaths.epicGames(root)
         // Ensure directory exists for StatFs
         File(path).mkdirs()
         return path
     }
 
     /**
-     * Default Epic games installation path - uses external storage if available
+     * Default Epic games installation path - uses the games root if it is writable
      */
     fun defaultEpicGamesPath(context: android.content.Context): String {
-        return if (PrefManager.useExternalStorage && File(PrefManager.externalStoragePath).exists()) {
+        val root = PrefManager.gamesRootPath
+        return if (root.isNotBlank() && StorageUtils.isUsableGamesRoot(root)) {
             val path = externalEpicGamesPath()
-            Timber.i("Epic using external storage: $path")
+            Timber.i("Epic using games root: $path")
             path
         } else {
             val path = internalEpicGamesPath(context)

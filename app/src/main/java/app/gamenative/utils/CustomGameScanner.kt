@@ -78,8 +78,8 @@ object CustomGameScanner {
      */
     val importRootPath: String
         get() {
-            val external = PrefManager.externalStoragePath
-            if (PrefManager.useExternalStorage && external.isNotBlank() && File(external).isDirectory) {
+            val external = PrefManager.gamesRootPath
+            if (external.isNotBlank() && File(external).isDirectory) {
                 val dir = File(external, "CustomGames")
                 if (StorageUtils.ensureInstallRoot(dir)) return dir.absolutePath
             }
@@ -109,7 +109,7 @@ object CustomGameScanner {
                 StorageUtils.publicInstallRoot(File(appDir))?.let { roots.add(File(it, "CustomGames").absolutePath) }
                 roots.add(File(appDir, "CustomGames").absolutePath)
             }
-            val external = PrefManager.externalStoragePath
+            val external = PrefManager.gamesRootPath
             if (external.isNotBlank()) {
                 roots.add(File(external, "CustomGames").absolutePath)
             }

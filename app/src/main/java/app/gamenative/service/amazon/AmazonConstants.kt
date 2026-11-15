@@ -3,6 +3,8 @@ package app.gamenative.service.amazon
 import android.content.Context
 import android.net.Uri
 import app.gamenative.PrefManager
+import app.gamenative.utils.GamesRootPaths
+import app.gamenative.utils.StorageUtils
 import java.io.File
 import java.nio.file.Paths
 import timber.log.Timber
@@ -58,15 +60,19 @@ object AmazonConstants {
     }
 
     fun externalAmazonGamesPath(): String {
-        val path = Paths.get(PrefManager.externalStoragePath, "Amazon", "games").toString()
+        val root = PrefManager.gamesRootPath
+        // Пустая строка: вызывающий код пропускает невыбранный корень
+        if (root.isBlank()) return ""
+        val path = GamesRootPaths.amazonGames(root)
         File(path).mkdirs()
         return path
     }
 
     fun defaultAmazonGamesPath(context: Context): String {
-        return if (PrefManager.useExternalStorage && File(PrefManager.externalStoragePath).exists()) {
+        val root = PrefManager.gamesRootPath
+        return if (root.isNotBlank() && StorageUtils.isUsableGamesRoot(root)) {
             val path = externalAmazonGamesPath()
-            Timber.i("Amazon using external storage: $path")
+            Timber.i("Amazon using games root: $path")
             path
         } else {
             val path = internalAmazonGamesPath(context)

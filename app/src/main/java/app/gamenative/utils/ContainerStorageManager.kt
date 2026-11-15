@@ -93,8 +93,7 @@ object ContainerStorageManager {
     }
 
     suspend fun getExternalVolumeInfo(context: Context): VolumeInfo? = withContext(Dispatchers.IO) {
-        if (!PrefManager.useExternalStorage) return@withContext null
-        val externalPath = PrefManager.externalStoragePath
+        val externalPath = PrefManager.gamesRootPath
         if (externalPath.isBlank() || !File(externalPath).isDirectory) return@withContext null
 
         try {
@@ -197,9 +196,8 @@ object ContainerStorageManager {
     }
 
     fun isExternalStorageConfigured(): Boolean {
-        return PrefManager.useExternalStorage &&
-            PrefManager.externalStoragePath.isNotBlank() &&
-            File(PrefManager.externalStoragePath).exists()
+        return PrefManager.gamesRootPath.isNotBlank() &&
+            File(PrefManager.gamesRootPath).exists()
     }
 
     fun getStorageLocation(context: Context, entry: Entry): StorageLocation {
@@ -829,7 +827,7 @@ object ContainerStorageManager {
         val externalRoots = buildList {
             when (gameSource) {
                 GameSource.STEAM -> {
-                    if (PrefManager.externalStoragePath.isNotBlank()) {
+                    if (PrefManager.gamesRootPath.isNotBlank()) {
                         add(SteamService.externalAppInstallPath)
                     }
                     addAll(
@@ -839,9 +837,9 @@ object ContainerStorageManager {
                     )
                 }
 
-                GameSource.GOG -> if (PrefManager.externalStoragePath.isNotBlank()) add(GOGConstants.externalGOGGamesPath)
-                GameSource.EPIC -> if (PrefManager.externalStoragePath.isNotBlank()) add(EpicConstants.externalEpicGamesPath())
-                GameSource.AMAZON -> if (PrefManager.externalStoragePath.isNotBlank()) add(AmazonConstants.externalAmazonGamesPath())
+                GameSource.GOG -> if (PrefManager.gamesRootPath.isNotBlank()) add(GOGConstants.externalGOGGamesPath)
+                GameSource.EPIC -> if (PrefManager.gamesRootPath.isNotBlank()) add(EpicConstants.externalEpicGamesPath())
+                GameSource.AMAZON -> if (PrefManager.gamesRootPath.isNotBlank()) add(AmazonConstants.externalAmazonGamesPath())
                 GameSource.CUSTOM_GAME -> Unit
             }
 

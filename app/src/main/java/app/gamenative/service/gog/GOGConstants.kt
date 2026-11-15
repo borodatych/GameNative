@@ -3,6 +3,8 @@ package app.gamenative.service.gog
 import android.content.Context
 import android.net.Uri
 import app.gamenative.PrefManager
+import app.gamenative.utils.GamesRootPaths
+import app.gamenative.utils.StorageUtils
 import java.io.File
 import java.nio.file.Paths
 import java.security.SecureRandom
@@ -120,12 +122,14 @@ object GOGConstants {
         }
 
     /**
-     * External GOG games installation path (similar to Steam's external path)
-     * {externalStoragePath}/GOG/games/common/
+     * GOG games inside the user-selected games root: <root>/GOG/games/common.
+     * Без выбранного корня возвращаем внутренний путь, чтобы не получить относительный.
      */
     val externalGOGGamesPath: String
         get() {
-            val path = Paths.get(PrefManager.externalStoragePath, "GOG", "games", "common").toString()
+            val root = PrefManager.gamesRootPath
+            if (root.isBlank()) return internalGOGGamesPath
+            val path = GamesRootPaths.gogCommon(root)
             // Ensure directory exists for StatFs
             File(path).mkdirs()
             return path
@@ -133,8 +137,10 @@ object GOGConstants {
 
     val defaultGOGGamesPath: String
         get() {
-            return if (PrefManager.useExternalStorage && File(PrefManager.externalStoragePath).exists()) {
-                Timber.i("GOG using external storage: $externalGOGGamesPath")
+            // Новые загрузки идут в корень пользователя, только если он выбран и доступен на запись
+            val root = PrefManager.gamesRootPath
+            return if (root.isNotBlank() && StorageUtils.isUsableGamesRoot(root)) {
+                Timber.i("GOG using games root: $root")
                 externalGOGGamesPath
             } else {
                 Timber.i("GOG using internal storage: $internalGOGGamesPath")

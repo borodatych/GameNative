@@ -186,8 +186,11 @@ object StorageUtils {
         return result
     }
 
-    // Своя папка в общей памяти, чтобы ThorHub не делил игры и экспорт с установленным рядом GameNative
-    const val PUBLIC_INSTALL_DIR_NAME = "ThorHub"
+    // Имя корня по умолчанию в общей памяти; пользователь может выбрать другой корень в настройках
+    const val PUBLIC_INSTALL_DIR_NAME = "Games"
+
+    // Экспорт контейнеров оставляем в прежней папке, чтобы не менять привычный путь для пользователей
+    const val EXPORT_DIR_NAME = "ThorHub"
 
     /**
      * Maps an app-specific dir (<volume>/Android/data/<pkg>/files) to a public install root
@@ -205,6 +208,17 @@ object StorageUtils {
         if (!dir.isDirectory && !dir.mkdirs()) return false
         runCatching { File(dir, ".nomedia").createNewFile() }
         return true
+    }
+
+    /**
+     * Готов ли выбранный пользователем корень для новых установок.
+     * Папку пытаемся создать: на Android 11+ без "Всех файлов" mkdirs вернёт false,
+     * и установки останутся во внутреннем хранилище вместо падения.
+     */
+    fun isUsableGamesRoot(path: String): Boolean {
+        if (path.isBlank()) return false
+        val dir = File(path)
+        return (dir.isDirectory || dir.mkdirs()) && dir.canWrite()
     }
 
     fun preferredInstallRoot(appFilesDir: File): String {

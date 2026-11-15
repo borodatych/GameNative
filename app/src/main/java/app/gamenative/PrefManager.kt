@@ -27,6 +27,7 @@ import app.gamenative.ui.enums.HomeDestination
 import app.gamenative.ui.enums.LibraryTab
 import app.gamenative.ui.enums.Orientation
 import app.gamenative.ui.enums.PaneType
+import app.gamenative.utils.GamesStorage
 import com.materialkolor.PaletteStyle
 import com.winlator.box86_64.Box86_64Preset
 import com.winlator.container.Container
@@ -73,6 +74,9 @@ object PrefManager {
 
     fun init(context: Context) {
         dataStore = context.datastore
+
+        // Старый выбор внешнего тома переносим в единый gamesRootPath до первых чтений.
+        migrateLegacyGamesRoot()
 
         // Note: Should remove after a few release versions. we've moved to encrypted values.
         val oldPassword = stringPreferencesKey("password")
@@ -1704,12 +1708,42 @@ object PrefManager {
             setPref(SAVE_BACKUPS_TO_KEEP, value)
         }
 
-    private val USE_EXTERNAL_STORAGE = booleanPreferencesKey("use_external_storage")
-    var useExternalStorage: Boolean
-        get() = getPref(USE_EXTERNAL_STORAGE, false)
+    private val GAMES_ROOT_PATH = stringPreferencesKey("games_root_path")
+
+    /**
+     * Единственная настройка места хранения игр: корень, внутри которого
+     * лежат папки магазинов. Пусто — пользователь ещё не выбирал.
+     */
+    var gamesRootPath: String
+        get() = getPref(GAMES_ROOT_PATH, "")
         set(value) {
-            setPref(USE_EXTERNAL_STORAGE, value)
-            setPref(EXTERNAL_STORAGE_PATH, "")
+            setPref(GAMES_ROOT_PATH, value)
+        }
+
+    /** Путь, который показываем пользователю: выбранный либо <хранилище>/Games. */
+    val effectiveGamesRootPath: String
+        get() = gamesRootPath.ifBlank { GamesStorage.defaultGamesRoot() }
+
+    private val PREVIOUS_GAMES_ROOT_PATH = stringPreferencesKey("previous_games_root_path")
+
+    /**
+     * Предыдущий корень: нужен, чтобы игры, оставшиеся после смены папки,
+     * продолжали находиться. Очищается, когда пользователь переносит игры.
+     */
+    var previousGamesRootPath: String
+        get() = getPref(PREVIOUS_GAMES_ROOT_PATH, "")
+        set(value) {
+            setPref(PREVIOUS_GAMES_ROOT_PATH, value)
+        }
+
+    /** Устаревшая настройка; нужна только чтобы не потерять путь при обновлении. */
+    private val USE_EXTERNAL_STORAGE = booleanPreferencesKey("use_external_storage")
+
+    /** Устаревшая настройка "включатель внешнего тома"; теперь это просто наличие корня. */
+    var useExternalStorage: Boolean
+        get() = gamesRootPath.isNotBlank()
+        set(value) {
+            if (!value) gamesRootPath = ""
         }
 
     private val FETCH_STEAMGRIDDB_IMAGES = booleanPreferencesKey("fetch_steamgriddb_images")
@@ -1720,11 +1754,28 @@ object PrefManager {
         }
 
     private val EXTERNAL_STORAGE_PATH = stringPreferencesKey("external_storage_path")
-    var externalStoragePath: String
+
+    /** Сырое значение старой настройки; после миграции всегда пустое. */
+    val legacyExternalStoragePath: String
         get() = getPref(EXTERNAL_STORAGE_PATH, "")
+
+    /** Совместимость: старый код читает и пишет тот же корень, что и новые настройки. */
+    var externalStoragePath: String
+        get() = gamesRootPath.ifBlank { legacyExternalStoragePath }
         set(value) {
-            setPref(EXTERNAL_STORAGE_PATH, value)
+            gamesRootPath = value
+            setPref(EXTERNAL_STORAGE_PATH, "")
         }
+
+    // Старый путь из "внешнего тома" становится корнем игр; второй настройки не остаётся.
+    private fun migrateLegacyGamesRoot() {
+        if (getPref(GAMES_ROOT_PATH, "").isNotBlank()) return
+        val legacy = getPref(EXTERNAL_STORAGE_PATH, "")
+        if (legacy.isBlank()) return
+        setPref(GAMES_ROOT_PATH, legacy)
+        setPref(EXTERNAL_STORAGE_PATH, "")
+        Timber.i("Migrated legacy external storage path to games root: $legacy")
+    }
 
     private val FRONTEND_SYNC_DIR_STEAM = stringPreferencesKey("frontend_sync_dir_steam")
     private val FRONTEND_SYNC_DIR_EPIC = stringPreferencesKey("frontend_sync_dir_epic")
