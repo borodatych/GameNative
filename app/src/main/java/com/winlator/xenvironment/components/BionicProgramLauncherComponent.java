@@ -294,6 +294,9 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         // Use the ControllerManager's dynamic count for the environment variable
         envVars.put("EVSHIM_MAX_PLAYERS", String.valueOf(MAX_PLAYERS));
+        // Без переменной evshim берёт зашитый каталог пакета upstream и не находит память геймпадов
+        // Каталог тот же, что создаёт WinHandler: <filesDir>/gamepad_shm
+        envVars.put("EVSHIM_BASE_PATH", environment.getContext().getFilesDir().getPath());
         if (true) {
             envVars.put("EVSHIM_SHM_ID", 1);
         }
