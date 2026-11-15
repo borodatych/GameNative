@@ -14,7 +14,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gamenative.PrefManager
 import app.gamenative.ui.component.LocalBarBlur
+import app.gamenative.ui.component.dialog.GamesFolderDialog
 import app.gamenative.ui.component.barBlurSource
 import app.gamenative.ui.component.rememberBarBlurState
 import app.gamenative.ui.enums.HomeDestination
@@ -81,6 +83,15 @@ fun HomeScreen(
         }
     } else {
         if (barBlur == null) content() else CompositionLocalProvider(LocalBarBlur provides barBlur, content)
+    }
+
+    // Первый запуск после логина: пока корень не выбран, показываем выбор папки для игр
+    var showGamesFolderDialog by remember { mutableStateOf(PrefManager.gamesRootPath.isBlank()) }
+    if (showGamesFolderDialog) {
+        GamesFolderDialog(
+            visible = true,
+            onDismiss = { showGamesFolderDialog = false },
+        )
     }
 }
 

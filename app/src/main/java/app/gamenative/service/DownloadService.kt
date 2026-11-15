@@ -52,12 +52,12 @@ object DownloadService {
     // Android/data paths pay a ~1000x FUSE metadata penalty (MediaProvider disables kernel
     // caching there); repoint the install pref at the public root so new installs avoid it
     private fun migrateExternalStoragePath() {
-        val pref = PrefManager.externalStoragePath
+        val pref = PrefManager.gamesRootPath
         if (pref.isBlank() || !pref.contains("/Android/data/")) return
         val public = StorageUtils.publicInstallRoot(File(pref)) ?: return
         if (StorageUtils.ensureInstallRoot(public)) {
-            Timber.i("Migrating external install root from $pref to ${public.absolutePath}")
-            PrefManager.externalStoragePath = public.absolutePath
+            Timber.i("Migrating games root from $pref to ${public.absolutePath}")
+            PrefManager.gamesRootPath = public.absolutePath
         }
     }
 

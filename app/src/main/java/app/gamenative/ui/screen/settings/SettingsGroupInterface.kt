@@ -72,6 +72,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import kotlin.math.roundToInt
 import com.winlator.core.AppUtils
+import app.gamenative.ui.component.dialog.GamesFolderDialog
 import app.gamenative.ui.component.dialog.MessageDialog
 import app.gamenative.ui.component.dialog.LoadingDialog
 import androidx.compose.runtime.LaunchedEffect
@@ -684,68 +685,21 @@ fun SettingsGroupInterface(
             },
         )
 
-        val ctx = LocalContext.current
-        val sm = ctx.getSystemService(StorageManager::class.java)
-
-        // All writable install target volumes (SD / USB / adopted primary storage).
-        // getExternalFilesDirs misses USB OTG on most devices, so StorageUtils also
-        // enumerates StorageManager.storageVolumes and synthesizes the per-app files dir.
-        // Runs off the composition thread because synthesizing the USB candidate
-        // may need mkdirs() on first plug-in.
-        val externalStorageFallbackLabel = stringResource(R.string.storage_external)
-        val dirs by produceState(initialValue = emptyList<File>(), ctx) {
-            value = withContext(Dispatchers.IO) {
-                StorageUtils.getAllExternalFilesDirs(ctx)
-                    .filter { Environment.getExternalStorageState(it) == Environment.MEDIA_MOUNTED }
-                    .filter { StorageUtils.isExternalInstallTarget(sm, it) }
-            }
-        }
-
-        // Labels the user sees
-        val labels = remember(dirs) {
-            dirs.map { dir ->
-                sm?.getStorageVolume(dir)?.getDescription(ctx) ?: externalStorageFallbackLabel
-            }
-        }
-        var useExternalStorage by rememberSaveable { mutableStateOf(PrefManager.useExternalStorage) }
-        SettingsSwitch(
+        // Одна настройка вместо старого переключателя "внешний том"
+        var showGamesFolderDialog by remember { mutableStateOf(false) }
+        SettingsMenuLink(
             colors = settingsTileColorsAlt(),
-            enabled = dirs.isNotEmpty(),
-            title = { Text(text = stringResource(R.string.settings_interface_external_storage_title)) },
+            title = { Text(text = stringResource(R.string.settings_games_folder_title)) },
             subtitle = {
-                if (dirs.isEmpty())
-                    Text(stringResource(R.string.settings_interface_no_external_storage))
-                else
-                    Text(stringResource(R.string.settings_interface_external_storage_subtitle))
+                // Показываем реальный путь: выбранный пользователем или значение по умолчанию
+                Text(text = PrefManager.effectiveGamesRootPath)
             },
-            state = useExternalStorage,
-            onCheckedChange = {
-                useExternalStorage = it
-                PrefManager.useExternalStorage = it
-                if (it && dirs.isNotEmpty()) {
-                    PrefManager.externalStoragePath = StorageUtils.preferredInstallRoot(dirs[0])
-                }
-            },
+            onClick = { showGamesFolderDialog = true },
         )
-        if (useExternalStorage) {
-            // Currently selected item
-            var selectedIndex by rememberSaveable(dirs) {
-                mutableStateOf(
-                    dirs.indexOfFirst { dir ->
-                        dir.absolutePath == PrefManager.externalStoragePath ||
-                            StorageUtils.publicInstallRoot(dir)?.absolutePath == PrefManager.externalStoragePath
-                    }.takeIf { it >= 0 } ?: 0,
-                )
-            }
-            SettingsListDropdown(
-                title = { Text(text = stringResource(R.string.settings_interface_storage_volume_title)) },
-                items = labels,
-                value = selectedIndex,
-                onItemSelected = { idx ->
-                    selectedIndex = idx
-                    PrefManager.externalStoragePath = StorageUtils.preferredInstallRoot(dirs[idx])
-                },
-                colors = settingsTileColorsAlt(),
+        if (showGamesFolderDialog) {
+            GamesFolderDialog(
+                visible = true,
+                onDismiss = { showGamesFolderDialog = false },
             )
         }
         // Steam download server selection

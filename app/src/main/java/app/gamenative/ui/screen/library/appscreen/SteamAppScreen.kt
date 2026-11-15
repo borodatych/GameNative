@@ -99,6 +99,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import app.gamenative.ui.component.dialog.GameManagerDialog
+import app.gamenative.ui.component.dialog.GamesFolderDialog
 import app.gamenative.ui.component.dialog.WorkshopManagerDialog
 import app.gamenative.ui.theme.MenuColorScope
 import app.gamenative.ui.theme.PluviaTheme
@@ -1076,6 +1077,15 @@ class SteamAppScreen : BaseAppScreen() {
         val gameId = libraryItem.gameId
         val appInfo = remember(libraryItem.appId) {
             SteamService.getAppInfoOf(gameId)
+        }
+
+        // Пользователь мог пропустить выбор при первом запуске — напоминаем до первой установки
+        var showGamesFolderPrompt by remember { mutableStateOf(PrefManager.gamesRootPath.isBlank()) }
+        if (showGamesFolderPrompt) {
+            GamesFolderDialog(
+                visible = true,
+                onDismiss = { showGamesFolderPrompt = false },
+            )
         }
 
         // Track uninstall dialog state
