@@ -386,7 +386,7 @@ fun BootingSplash(
                 ) {
                     // Glow layer (blurred behind)
                     Text(
-                        text = "GameNative",
+                        text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.displaySmall.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 36.sp,
@@ -401,7 +401,7 @@ fun BootingSplash(
 
                     // Main logo text
                     Text(
-                        text = "GameNative",
+                        text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.displaySmall.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 36.sp,
