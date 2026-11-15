@@ -9,6 +9,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import app.gamenative.utils.Net
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
@@ -22,7 +23,8 @@ data class UpdateInfo(
 )
 
 object UpdateChecker {
-    private val httpClient = OkHttpClient.Builder()
+    // Свой таймаут поверх общего клиента: проверка обновления не должна ждать минутами.
+    private val httpClient = Net.http.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()

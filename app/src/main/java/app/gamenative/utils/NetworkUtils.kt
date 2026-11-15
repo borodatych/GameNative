@@ -24,7 +24,12 @@ import java.util.concurrent.TimeUnit
 
 object Net {
 
+    /** Короткий таймаут: мёртвый адрес должен отваливаться быстро, а не держать загрузку минутами. */
+    private const val CONNECT_TIMEOUT_SECONDS = 5L
+
+    // Отдельный клиент обязателен: он разрешает имя DoH-сервера, поэтому не может брать DNS из Net.http.
     private val bootstrapClient = OkHttpClient.Builder()
+        .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
         .build()
 
@@ -37,26 +42,32 @@ object Net {
         )
         .build()
 
-    val fallbackDns: Dns = object : Dns {
-        override fun lookup(hostname: String): List<InetAddress> {
-            return try {
-                doh.lookup(hostname)
-            } catch (e: Exception) {
-                Timber.w(e, "DoH lookup failed for $hostname, falling back to system DNS")
-                Dns.SYSTEM.lookup(hostname)
+    // IPv4 первым: на сетях с нерабочим IPv6 иначе connect уходит в мёртвый адрес.
+    val fallbackDns: Dns = Ipv4FirstDns(
+        object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                return try {
+                    doh.lookup(hostname)
+                } catch (e: Exception) {
+                    Timber.w(e, "DoH lookup failed for $hostname, falling back to system DNS")
+                    Dns.SYSTEM.lookup(hostname)
+                }
             }
-        }
-    }
+        },
+    )
 
+    /** База для всех клиентов приложения: остальные добавляют только свои таймауты и интерсепторы. */
     val http: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .dns(fallbackDns)
-            .connectTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .callTimeout(5, TimeUnit.MINUTES)
             .pingInterval(30, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
+            // При недоступном IPv6 OkHttp должен параллельно пробовать IPv4, а не ждать первый адрес.
+            .fastFallback(true)
             .build()
     }
 

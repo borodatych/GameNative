@@ -61,6 +61,10 @@ import app.gamenative.events.AndroidEvent
 import app.gamenative.events.SteamEvent
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.DepotManifestFiles
+import app.gamenative.utils.DownloadHttpException
+import app.gamenative.utils.DownloadMirrors
+import app.gamenative.utils.MirrorDownloads
+import app.gamenative.utils.MirrorResolver
 import app.gamenative.utils.FileUtils
 import app.gamenative.utils.GamesRootPaths
 import app.gamenative.utils.LicenseSerializer
@@ -2349,7 +2353,8 @@ class SteamService : Service(), IChallengeUrlChanged {
 
                 val req = Request.Builder().url(url).build()
                 http.newCall(req).execute().use { rsp ->
-                    check(rsp.isSuccessful) { "HTTP ${rsp.code}" }
+                    // Отдельный тип нужен, чтобы перебор зеркал отличал HTTP-отказ от прочих сбоев.
+                    if (!rsp.isSuccessful) throw DownloadHttpException(url, rsp.code)
                     val body = rsp.body ?: error("empty body")
                     val total = body.contentLength()
                     tmp.outputStream().use { out ->
@@ -2372,28 +2377,44 @@ class SteamService : Service(), IChallengeUrlChanged {
             }
         }
 
+        /**
+         * Скачивает файл по полному URL, перебирая зеркала этого URL.
+         * Зачем: основной хост может не отвечать, а тот же файл лежит на R2 и в релизах ThorHub.
+         */
+        suspend fun fetchFileFromMirrors(
+            url: String,
+            dest: File,
+            onProgress: (Float) -> Unit,
+        ) = withContext(Dispatchers.IO) {
+            try {
+                MirrorDownloads.tryInOrder(
+                    candidates = MirrorResolver.candidates(url),
+                    // Между попытками недокачанный файл удаляется, иначе следующий источник начнёт не с нуля.
+                    onAttemptFailed = { dest.delete() },
+                ) { candidate ->
+                    onProgress(0f)
+                    fetchFile(candidate, dest, onProgress)
+                }
+            } catch (e: CancellationException) {
+                // Отмена корутины не сетевой сбой: её нельзя заворачивать в IOException.
+                dest.delete()
+                throw e
+            } catch (e: Exception) {
+                dest.delete()
+                throw IOException(
+                    "Failed to download $url. Please check your network connection or try a VPN.",
+                    e,
+                )
+            }
+        }
+
         suspend fun fetchFileWithFallback(
             fileName: String,
             dest: File,
             context: Context,
             onProgress: (Float) -> Unit,
         ) = withContext(Dispatchers.IO) {
-            val primaryUrl = "https://downloads.gamenative.app/$fileName"
-            val fallbackUrl = "https://pub-9fcd5294bd0d4b85a9d73615bf98f3b5.r2.dev/$fileName"
-            try {
-                fetchFile(primaryUrl, dest, onProgress)
-            } catch (e: Exception) {
-                Timber.w(e, "Primary download failed; retrying with fallback URL")
-                try {
-                    fetchFile(fallbackUrl, dest, onProgress)
-                } catch (e2: Exception) {
-                    dest.delete()
-                    throw IOException(
-                        "Failed to download $fileName. Please check your network connection or try a VPN.",
-                        e2,
-                    )
-                }
-            }
+            fetchFileFromMirrors(DownloadMirrors.primaryUrl(fileName), dest, onProgress)
         }
 
         /** copyTo with progress callback */
@@ -4497,11 +4518,14 @@ class SteamService : Service(), IChallengeUrlChanged {
                 it.withServerListProvider(FileServerListProvider(File(serverListPath)))
                 it.withConnectionTimeout(60000L)
                 it.withHttpClient(
-                    OkHttpClient.Builder()
+                    // Клиент Steam тоже наследует общий DNS: серверы связи иначе выбирают мёртвый IPv6.
+                    Net.http.newBuilder()
                         .connectTimeout(10, TimeUnit.SECONDS)
                         .readTimeout(60, TimeUnit.SECONDS)
                         .writeTimeout(30, TimeUnit.SECONDS)
                         .pingInterval(15, TimeUnit.SECONDS) // keep WebSocket alive during idle
+                        // У сессии Steam нет конечного времени жизни, общий callTimeout её бы обрывал.
+                        .callTimeout(0, TimeUnit.MILLISECONDS)
                         .build(),
                 )
             }

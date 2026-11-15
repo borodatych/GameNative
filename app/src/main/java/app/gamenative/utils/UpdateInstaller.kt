@@ -23,20 +23,11 @@ object UpdateInstaller {
             val apkFileName = "gamenative-v$versionName.apk"
             val destFile = File(context.cacheDir, apkFileName)
 
-            // Extract filename from URL for fetchFileWithFallback
-            // The URL should be like: https://downloads.gamenative.app/gamenative-v0.5.3.apk
-            val fileName = downloadUrl.substringAfterLast("https://downloads.gamenative.app/")
-
-            Timber.i("Downloading update: $fileName from URL: $downloadUrl")
+            Timber.i("Downloading update from URL: $downloadUrl")
             Timber.i("Saving to: ${destFile.absolutePath}")
 
-            // Use the existing fetchFileWithFallback method which handles fallback URLs
-            SteamService.fetchFileWithFallback(
-                fileName = fileName,
-                dest = destFile,
-                context = context,
-                onProgress = onProgress
-            )
+            // Берём полный URL: резолвер сам подставит зеркала, если это основной хост.
+            SteamService.fetchFileFromMirrors(downloadUrl, destFile, onProgress)
 
             // Verify the file exists and has content
             if (!destFile.exists()) {

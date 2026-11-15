@@ -15,6 +15,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 data class EaCloudSaveTarget(
@@ -38,7 +39,8 @@ object EaCloudSaveConfig {
 
     private class Cached(val target: EaCloudSaveTarget?, val fetchedAt: Long)
 
-    private val client = OkHttpClient.Builder()
+    // Общий клиент даёт IPv4-first DNS; HTTP/1.1 и таймауты остаются специфичными для EA.
+    private val client = Net.http.newBuilder()
         .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(60, TimeUnit.SECONDS)

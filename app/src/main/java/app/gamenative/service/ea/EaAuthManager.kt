@@ -21,6 +21,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import org.json.JSONArray
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 data class EaCredentials(
@@ -38,7 +39,8 @@ data class EaCredentials(
  * (JUNO_PC_CLIENT, PKCE, pc_sign), with the code captured from the qrc:// redirect in a WebView.
  */
 object EaAuthManager {
-    private val client = OkHttpClient.Builder()
+    // Редиректы отключены для перехвата кода, остальное поведение берём у общего клиента.
+    private val client = Net.http.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
         .connectTimeout(30, TimeUnit.SECONDS)

@@ -10,6 +10,7 @@ import okhttp3.Request
 import app.gamenative.Crypto
 import java.io.File
 import org.json.JSONObject
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 data class RockstarCredentials(
@@ -49,7 +50,8 @@ object RockstarAuthManager {
     /** Filled by the last successful exchange so [store] can persist them alongside the token. */
     private var lastExtras: Triple<String, String, String> = Triple("", "", "")
 
-    private val http = OkHttpClient.Builder()
+    // Общий DNS и fastFallback, а редиректы отключены намеренно: код нужно перехватить, а не пройти дальше.
+    private val http = Net.http.newBuilder()
         .followRedirects(false)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)

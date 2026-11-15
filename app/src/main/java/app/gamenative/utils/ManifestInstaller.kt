@@ -28,7 +28,8 @@ object ManifestInstaller {
         var destFile: File? = null
         try {
             destFile = File(context.cacheDir, entry.url.substringAfterLast("/"))
-            SteamService.fetchFile(entry.url, destFile, onProgress)
+            // Полный URL из манифеста тоже может указывать на основной хост, поэтому идём через зеркала.
+            SteamService.fetchFileFromMirrors(entry.url, destFile, onProgress)
             val uri = Uri.fromFile(destFile)
             val name = AdrenotoolsManager(context).installDriver(uri)
             if (name.isEmpty()) {
@@ -91,7 +92,8 @@ object ManifestInstaller {
             val cacheDir = File(context.filesDir, "assets/dxwrapper")
             cacheDir.mkdirs()
             val dest = File(cacheDir, entry.url.substringAfterLast("/"))
-            SteamService.fetchFile(entry.url, dest, onProgress)
+            // Прямой .tzst (dxvk/vkd3d) качается по тому же правилу зеркал, что и остальные файлы.
+            SteamService.fetchFileFromMirrors(entry.url, dest, onProgress)
             if (!dest.exists() || dest.length() == 0L) {
                 dest.delete()
                 return@withContext ManifestInstallResult(
@@ -124,7 +126,8 @@ object ManifestInstaller {
         var destFile: File? = null
         try {
             destFile = File(context.cacheDir, entry.url.substringAfterLast("/"))
-            SteamService.fetchFile(entry.url, destFile, onProgress)
+            // Полный URL из манифеста тоже может указывать на основной хост, поэтому идём через зеркала.
+            SteamService.fetchFileFromMirrors(entry.url, destFile, onProgress)
             val uri = Uri.fromFile(destFile)
             val mgr = ContentsManager(context)
 

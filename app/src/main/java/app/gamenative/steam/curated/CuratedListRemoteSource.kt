@@ -1,6 +1,7 @@
 package app.gamenative.steam.curated
 
 import androidx.annotation.VisibleForTesting
+import app.gamenative.utils.MirrorDownloads
 import app.gamenative.utils.Net
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +32,10 @@ internal object CuratedListRemoteSource {
         val appIds: List<Int>,
     )
 
-    suspend fun fetch(): Set<Int>? = fetch(Net.http, listUrl)
+    // Список лежит на основном хосте: пробуем его и зеркала, пока одно из них не ответит.
+    suspend fun fetch(): Set<Int>? = MirrorDownloads.firstNonNull(listUrl.toString()) { candidate ->
+        fetch(Net.http, candidate.toHttpUrl())
+    }
 
     @VisibleForTesting
     internal suspend fun fetch(client: Call.Factory, url: HttpUrl): Set<Int>? =

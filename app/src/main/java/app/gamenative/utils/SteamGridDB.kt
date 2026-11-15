@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import app.gamenative.utils.Net
 import timber.log.Timber
 import java.io.File
 import java.io.FileOutputStream
@@ -28,7 +29,8 @@ object SteamGridDB {
     private const val HEROES_ENDPOINT = "/heroes/game"
     private const val LOGOS_ENDPOINT = "/logos/game"
 
-    private val httpClient = OkHttpClient.Builder()
+    // Общий клиент даёт IPv4-first DNS и fastFallback, свои здесь только таймауты.
+    private val httpClient = Net.http.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()

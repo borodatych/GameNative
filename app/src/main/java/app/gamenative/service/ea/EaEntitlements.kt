@@ -11,6 +11,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import app.gamenative.utils.Net
 import timber.log.Timber
 
 /** The EA account's SDK entitlements, as the EA app serves them to games over LSX QueryEntitlements. */
@@ -27,7 +28,8 @@ object EaEntitlements {
         val version: Int,
     )
 
-    private val client = OkHttpClient.Builder()
+    // Общий клиент: тот же DNS, тот же fastFallback; EA требует только HTTP/1.1.
+    private val client = Net.http.newBuilder()
         .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
         .build()

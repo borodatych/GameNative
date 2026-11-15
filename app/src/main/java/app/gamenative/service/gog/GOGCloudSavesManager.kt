@@ -12,6 +12,7 @@ import okhttp3.OkHttpClient
 import okio.BufferedSink
 import okio.source
 import org.json.JSONArray
+import app.gamenative.utils.Net
 import timber.log.Timber
 import java.io.Closeable
 import java.io.File
@@ -34,7 +35,8 @@ class GOGCloudSavesManager(
     private val context: Context
 ) {
 
-    private val httpClient = OkHttpClient.Builder()
+    // Наследуем общий DNS, чтобы облачные сохранения не зависали на мёртвом IPv6.
+    private val httpClient = Net.http.newBuilder()
     .connectTimeout(30, TimeUnit.SECONDS)
     .readTimeout(30, TimeUnit.SECONDS)
     .build()

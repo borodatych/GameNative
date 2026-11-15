@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import app.gamenative.utils.Net
 import timber.log.Timber
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -26,7 +27,8 @@ object KeyAttestationHelper {
 
     private const val TAG = "KeyAttestationHelper"
 
-    private val httpClient = OkHttpClient.Builder()
+    // Общий клиент даёт IPv4-first DNS, здесь меняются только таймауты attestation-запросов.
+    private val httpClient = Net.http.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
