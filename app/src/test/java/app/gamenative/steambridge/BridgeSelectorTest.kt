@@ -143,11 +143,11 @@ class BridgeSelectorTest {
 
     @Test
     fun equalCountIsDecidedByHighestVersionPerFamily() {
-        val older = bridge("older", "SteamUtils010", "SteamUser023")
-        val newer = bridge("newer", "SteamUtils011", "SteamUser022")
+        val older = bridge("older", "SteamUtils010", "SteamFriends017")
+        val newer = bridge("newer", "SteamUtils011", "SteamFriends017")
 
-        // Оба покрывают запрос, интерфейсов поровну — решает версия семейства SteamUtils.
-        val result = BridgeSelector.select(11, BridgeArch.ARM64EC, setOf("SteamUtils010"), listOf(older, newer))
+        // Оба покрывают запрос, интерфейсов поровну, SteamFriends совпадает — решает версия SteamUtils
+        val result = BridgeSelector.select(11, BridgeArch.ARM64EC, setOf("SteamFriends017"), listOf(older, newer))
 
         assertEquals("newer", result.chosen?.id)
     }
