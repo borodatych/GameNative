@@ -701,6 +701,9 @@
     <string name="label_text">Текст метки</string>
     <string name="label_text_subtitle">Пользовательский текст для этой кнопки</string>
     <string name="language">Язык</string>
+    <string name="language_redownload_title">Скачать файлы для языка %1$s?</string>
+    <string name="language_redownload_message">Игре нужны файлы из магазина на языке %1$s. Скачать их сейчас?</string>
+    <string name="language_redownload_message_with_size">Игре нужны файлы из магазина на языке %1$s (%2$s). Скачать их сейчас?</string>
     <string name="last_played">Последний раз играл</string>
     <string name="launch_dependency_failed_message">Ошибка загрузки требуемого компонента. Пожалуйста, попробуйте позже.</string>
     <string name="launch_dependency_failed_title">Ошибка загрузки зависимости запуска</string>
@@ -3373,4 +3376,6 @@ https://gamenative.app
     <string name="support_files_listing_sending">Отправка списка %1$s</string>
     <string name="support_files_listing_sent">Список отправлен (элементов: %1$d)</string>
     <string name="support_files_listing_failed">Не удалось отправить список %1$s. %2$s</string>
+    <string name="settings_default_game_language">Язык игр по умолчанию</string>
+    <string name="settings_default_game_language_subtitle">Используется для новых загрузок и контейнеров</string>
 </resources>

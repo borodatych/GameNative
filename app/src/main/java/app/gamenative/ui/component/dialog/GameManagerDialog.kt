@@ -29,6 +29,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,7 +83,10 @@ fun GameManagerDialog(
     visible: Boolean,
     onGetDisplayInfo: @Composable (Context) -> GameDisplayInfo,
     branch: String? = null,
-    onInstall: (List<Int>) -> Unit,
+    // Kept for previews and callers that only need the DLC selection.
+    onInstall: (List<Int>) -> Unit = {},
+    // Receives the language chosen in the dialog together with the DLC selection.
+    onInstallWithLanguage: ((List<Int>, String) -> Unit)? = null,
     onDismissRequest: () -> Unit
 ) {
     val context = LocalContext.current
@@ -95,6 +99,18 @@ fun GameManagerDialog(
 
     val displayInfo = onGetDisplayInfo(context)
     val gameId = displayInfo.gameId
+
+    // A container that already exists keeps its language; a fresh install starts from the
+    // app-wide default so the choice in Settings applies without touching this dialog.
+    val initialLanguage = remember(gameId) {
+        runCatching {
+            app.gamenative.utils.ContainerUtils.getContainer(context, displayInfo.appId).language
+        }.getOrNull() ?: app.gamenative.PrefManager.defaultGameLanguage
+    }
+    val selectedLanguage = remember(gameId) { mutableStateOf(initialLanguage) }
+    val languagePickerOpen = remember { mutableStateOf(false) }
+    // Empty while unknown, and the picker then offers every language instead of guessing.
+    val supportedLanguages = remember(gameId) { mutableStateOf<List<String>>(emptyList()) }
 
     val isBaseGameInstalled = remember(gameId) {
         SteamService.isAppInstalled(gameId)
@@ -112,7 +128,7 @@ fun GameManagerDialog(
         SteamService.getMainAppDlcIdsWithoutProperDepotDlcIds(gameId).toList()
     }
 
-    LaunchedEffect(visible) {
+    LaunchedEffect(visible, selectedLanguage.value) {
         // Keep the scroll off the critical path: on D-pad devices (Android TV) the focus
         // system scrolls the dialog as it opens, cancelling this animation and killing the
         // depot load below, which left the dialog at 0 B with Install disabled.
@@ -121,8 +137,31 @@ fun GameManagerDialog(
         downloadableDepots.clear()
         allDownloadableApps.clear()
 
+        // Depot lists and sizes depend on the language, so they are rebuilt when it changes.
+        val supported = withContext(Dispatchers.IO) {
+            SteamService.getAppInfoOf(gameId)?.let { app ->
+                app.gamenative.utils.GameLanguages.filterSupported(
+                    app.depots.values
+                        .filter { it.dlcAppId == INVALID_APP_ID && it.isWindowsCompatible }
+                        .map { it.language },
+                )
+            }.orEmpty()
+        }
+        if (supported.isNotEmpty()) {
+            supportedLanguages.value = supported
+            // Keep the picker on a language the app ships; otherwise the store silently installs
+            // English while the dialog shows a different label.
+            if (selectedLanguage.value !in supported) {
+                selectedLanguage.value =
+                    app.gamenative.utils.GameLanguages.preselected(selectedLanguage.value, supported)
+                return@LaunchedEffect
+            }
+        }
+
         // Get Downloadable Depots
-        val allPossibleDownloadableDepots = withContext(Dispatchers.IO) { SteamService.getDownloadableDepots(gameId) }
+        val allPossibleDownloadableDepots = withContext(Dispatchers.IO) {
+            SteamService.getDownloadableDepots(gameId, selectedLanguage.value)
+        }
         downloadableDepots.putAll(allPossibleDownloadableDepots)
 
         // Get Optional DLC IDs
@@ -424,6 +463,46 @@ fun GameManagerDialog(
                                 )
                             }
 
+                            // Language comes before DLCs: it decides which depot the base game
+                            // installs, and the sizes below follow it.
+                            val languageOptions = supportedLanguages.value.ifEmpty {
+                                app.gamenative.utils.GameLanguages.CODES
+                            }
+                            ListItem(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { languagePickerOpen.value = true },
+                                headlineContent = { Text(text = stringResource(R.string.language)) },
+                                supportingContent = {
+                                    Text(
+                                        text = app.gamenative.utils.GameLanguages
+                                            .displayName(selectedLanguage.value),
+                                    )
+                                },
+                            )
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                            )
+                            SingleChoiceDialog(
+                                openDialog = languagePickerOpen.value,
+                                icon = null,
+                                iconDescription = null,
+                                title = stringResource(R.string.language),
+                                items = languageOptions
+                                    .map { app.gamenative.utils.GameLanguages.displayName(it) },
+                                currentItem = languageOptions
+                                    .indexOf(selectedLanguage.value).coerceAtLeast(0),
+                                onSelected = { index ->
+                                    languageOptions.getOrNull(index)?.let {
+                                        selectedLanguage.value = it
+                                    }
+                                    languagePickerOpen.value = false
+                                },
+                                onDismiss = { languagePickerOpen.value = false },
+                            )
+
                             // Select All toggle
                             if (selectableAppIds.isNotEmpty()) {
                                 Row(
@@ -508,9 +587,17 @@ fun GameManagerDialog(
                                 Button(
                                     enabled = installButtonEnabled(),
                                     onClick = {
-                                        onInstall(selectedAppIds
+                                        val selectedIds = selectedAppIds
                                             .filter { selectedId -> selectedId.key in enabledAppIds.filter { enabledId -> enabledId.value } }
-                                            .filter { selectedId -> selectedId.value }.keys.toList())
+                                            .filter { selectedId -> selectedId.value }.keys.toList()
+                                        // Callers that can persist the language get it; the plain
+                                        // callback is kept for previews.
+                                        val withLanguage = onInstallWithLanguage
+                                        if (withLanguage != null) {
+                                            withLanguage(selectedIds, selectedLanguage.value)
+                                        } else {
+                                            onInstall(selectedIds)
+                                        }
                                     }
                                 ) {
                                     Text(stringResource(R.string.install))

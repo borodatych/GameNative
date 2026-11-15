@@ -404,7 +404,14 @@ class EpicAppScreen : BaseAppScreen() {
      * @param scope Lifecycle-aware CoroutineScope from the calling composable
      * @param selectedGameIds List of game IDs to download (base game + selected DLCs)
      */
-    private fun performDownload(scope: CoroutineScope, context: Context, libraryItem: LibraryItem, selectedGameIds: List<Int>, onClickPlay: (Boolean) -> Unit) {
+    private fun performDownload(
+        scope: CoroutineScope,
+        context: Context,
+        libraryItem: LibraryItem,
+        selectedGameIds: List<Int>,
+        language: String? = null,
+        onClickPlay: (Boolean) -> Unit,
+    ) {
         Timber.tag(TAG).i("Starting Epic game download: ${libraryItem.gameId} with ${selectedGameIds.size} items (including DLCs)")
         scope.launch(Dispatchers.IO) {
             try {
@@ -419,6 +426,11 @@ class EpicAppScreen : BaseAppScreen() {
                 // Get install path
                 val installPath = EpicConstants.getGameInstallPath(context, game.appName)
                 Timber.tag(TAG).d("Downloading Epic game to: $installPath")
+
+                // Язык из диалога установки сохраняем в контейнер до загрузки: по нему
+                // выбираются install-теги манифеста и с ним потом запускается игра.
+                val chosenLanguage = language ?: loadContainerData(context, libraryItem).language
+                ContainerUtils.ensureContainerLanguage(context, libraryItem.appId, chosenLanguage)
 
                 // Determine if we should download DLCs (if more than just the base game is selected)
                 val withDlcs = selectedGameIds.size > 1
@@ -435,8 +447,13 @@ class EpicAppScreen : BaseAppScreen() {
                 // Start download - EpicService will handle monitoring, database updates, verification, and events
                 // Pass the selected DLC IDs (excluding the base game). Use container language for install-tag selection.
                 val dlcIds = selectedGameIds.filter { it != libraryItem.gameId }
-                val containerData = loadContainerData(context, libraryItem)
-                val result = EpicService.downloadGame(context, libraryItem.gameId, dlcIds, installPath, containerData.language)
+                val result = EpicService.downloadGame(
+                    context,
+                    libraryItem.gameId,
+                    dlcIds,
+                    installPath,
+                    chosenLanguage,
+                )
 
                 if (result.isSuccess) {
                     Timber.tag(TAG).i("Epic game download started successfully: ${libraryItem.gameId}")
@@ -638,9 +655,47 @@ class EpicAppScreen : BaseAppScreen() {
         app.gamenative.utils.ContainerUtils.applyToContainer(context, libraryItem.appId, config)
         Timber.tag(TAG).d("saveContainerConfig: saved container config for ${libraryItem.appId}")
 
-        if (previousLanguage != config.language) {
-            triggerEpicUpdateDownload(context, libraryItem, config.language, clearPrerequisiteMarkers = false)
+        // Конфиг уже сохранён: "Нет" в вопросе оставит только новый язык, без загрузки.
+        if (app.gamenative.utils.GameLanguages.shouldPromptForDownload(
+                installed = isInstalled(context, libraryItem),
+                previousLanguage = previousLanguage,
+                newLanguage = config.language,
+            )
+        ) {
+            showLanguageRedownloadPrompt(context, libraryItem, config.language)
         }
+    }
+
+    private fun showLanguageRedownloadPrompt(
+        context: Context,
+        libraryItem: LibraryItem,
+        language: String,
+    ) {
+        val name = app.gamenative.utils.GameLanguages.displayName(language)
+        // Размер загрузки уже лежит в БД игры, поэтому его можно показать без сети.
+        val downloadBytes = EpicService.getEpicGameOf(libraryItem.gameId)
+            ?.downloadSize
+            ?.takeIf { it > 0L }
+        val message = if (downloadBytes != null) {
+            context.getString(
+                R.string.language_redownload_message_with_size,
+                name,
+                StringUtils.formatBytes(downloadBytes),
+            )
+        } else {
+            context.getString(R.string.language_redownload_message, name)
+        }
+        showInstallDialog(
+            libraryItem.appId,
+            app.gamenative.ui.component.dialog.state.MessageDialogState(
+                visible = true,
+                type = app.gamenative.ui.enums.DialogType.LANGUAGE_REDOWNLOAD,
+                title = context.getString(R.string.language_redownload_title, name),
+                message = message,
+                confirmBtnText = context.getString(R.string.yes),
+                dismissBtnText = context.getString(R.string.no),
+            ),
+        )
     }
 
     override fun supportsContainerConfig(): Boolean {
@@ -974,6 +1029,20 @@ class EpicAppScreen : BaseAppScreen() {
                     }
                 }
 
+                app.gamenative.ui.enums.DialogType.LANGUAGE_REDOWNLOAD -> {
+                    {
+                        BaseAppScreen.hideInstallDialog(appId)
+                        // Язык уже сохранён в контейнере, поэтому просто повторяем прежний путь.
+                        val language = loadContainerData(context, libraryItem).language
+                        triggerEpicUpdateDownload(
+                            context,
+                            libraryItem,
+                            language,
+                            clearPrerequisiteMarkers = false,
+                        )
+                    }
+                }
+
                 else -> null
             }
             app.gamenative.ui.component.dialog.MessageDialog(
@@ -995,9 +1064,9 @@ class EpicAppScreen : BaseAppScreen() {
                 onGetDisplayInfo = { context ->
                     getGameDisplayInfo(context, libraryItem)
                 },
-                onInstall = { selectedGameIds ->
+                onInstall = { selectedGameIds, language ->
                     hideGameManagerDialog(gameId)
-                    performDownload(scope, context, libraryItem, selectedGameIds) {}
+                    performDownload(scope, context, libraryItem, selectedGameIds, language) {}
                 },
                 onDismissRequest = {
                     hideGameManagerDialog(gameId)

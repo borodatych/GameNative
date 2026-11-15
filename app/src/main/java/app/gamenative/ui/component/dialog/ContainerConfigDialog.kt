@@ -274,12 +274,8 @@ private fun rememberContainerConfigDialogStaticData(): ContainerConfigDialogStat
         baseWrapperVersions = ManifestComponentHelper.bundledGraphicsDriverBase(
             stringArrayResource(R.array.wrapper_graphics_driver_version_entries).toList(),
         ),
-        languages = listOf(
-            "arabic", "bulgarian", "schinese", "tchinese", "czech", "danish", "dutch", "english",
-            "finnish", "french", "german", "greek", "hungarian", "italian", "japanese", "koreana",
-            "norwegian", "polish", "portuguese", "brazilian", "romanian", "russian", "spanish",
-            "latam", "swedish", "thai", "turkish", "ukrainian", "vietnamese",
-        ),
+        // Один список языков на всё приложение: порядок и коды приходят из GameLanguages.
+        languages = app.gamenative.utils.GameLanguages.CODES,
     )
 }
 

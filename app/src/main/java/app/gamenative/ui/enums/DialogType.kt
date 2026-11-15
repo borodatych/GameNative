@@ -30,6 +30,8 @@ enum class DialogType(val icon: ImageVector? = null) {
     DELETE_APP,
     INSTALL_IMAGEFS,
     UPDATE_VERIFY_CONFIRM,
+    // Язык в конфиге уже сохранён; вопрос только про скачивание файлов нового языка.
+    LANGUAGE_REDOWNLOAD,
     RESET_CONTAINER_CONFIRM,
     
     GAME_FEEDBACK,

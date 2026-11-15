@@ -75,6 +75,7 @@ import app.gamenative.ui.theme.ThemedDropdownMenuItem
 import app.gamenative.ui.theme.ThemedExposedDropdownMenu
 import app.gamenative.utils.CloudSaveBackupManager
 import app.gamenative.utils.ContainerUtils
+import app.gamenative.utils.GameLanguages
 import app.gamenative.utils.MarkerUtils
 import app.gamenative.utils.SteamUtils
 import app.gamenative.utils.StorageUtils
@@ -1030,14 +1031,34 @@ class SteamAppScreen : BaseAppScreen() {
     }
 
     override fun saveContainerConfig(context: Context, libraryItem: LibraryItem, config: ContainerData) {
-        val container = getContainer(context, libraryItem.appId)
+        val previousLanguage = getContainer(context, libraryItem.appId).language
         ContainerUtils.applyToContainer(context, libraryItem.appId, config)
 
-        if (container.language != config.language) {
-            CoroutineScope(Dispatchers.IO).launch {
-                SteamService.downloadApp(libraryItem.gameId, SteamDownloadMode.UPDATE)
-            }
+        // Конфиг уже сохранён: "Нет" в вопросе оставит только новый язык, без загрузки.
+        if (GameLanguages.shouldPromptForDownload(
+                installed = SteamService.isAppInstalled(libraryItem.gameId),
+                previousLanguage = previousLanguage,
+                newLanguage = config.language,
+            )
+        ) {
+            showLanguageRedownloadPrompt(context, libraryItem.gameId, config.language)
         }
+    }
+
+    private fun showLanguageRedownloadPrompt(context: Context, gameId: Int, language: String) {
+        val name = GameLanguages.displayName(language)
+        // Размер загрузки для Steam дорогой (нужны депоты и манифесты), поэтому спрашиваем без него.
+        showInstallDialog(
+            gameId,
+            MessageDialogState(
+                visible = true,
+                type = DialogType.LANGUAGE_REDOWNLOAD,
+                title = context.getString(R.string.language_redownload_title, name),
+                message = context.getString(R.string.language_redownload_message, name),
+                confirmBtnText = context.getString(R.string.yes),
+                dismissBtnText = context.getString(R.string.no),
+            ),
+        )
     }
 
     override fun supportsContainerConfig(): Boolean = true
@@ -1363,6 +1384,17 @@ class SteamAppScreen : BaseAppScreen() {
                     }
                 }
 
+                DialogType.LANGUAGE_REDOWNLOAD -> {
+                    {
+                        hideInstallDialog(gameId)
+                        // Язык уже сохранён в контейнере, поэтому путь прежний: обновление
+                        // перекачает депоты новым языком.
+                        CoroutineScope(Dispatchers.IO).launch {
+                            SteamService.downloadApp(gameId, SteamDownloadMode.UPDATE)
+                        }
+                    }
+                }
+
                 DialogType.INSTALL_IMAGEFS -> {
                     {
                         hideInstallDialog(gameId)
@@ -1525,7 +1557,7 @@ class SteamAppScreen : BaseAppScreen() {
                     return@GameManagerDialog getGameDisplayInfo(context, libraryItem)
                 },
                 branch = gameManagerDialogState.branch,
-                onInstall = { dlcAppIds ->
+                onInstallWithLanguage = { dlcAppIds, language ->
                     val branch = gameManagerDialogState.branch
                         ?: SteamService.getInstalledApp(gameId)?.branch
                         ?: "public"
@@ -1544,6 +1576,9 @@ class SteamAppScreen : BaseAppScreen() {
                             ConversionTracker.campaignAttribution(gameId),
                     )
                     CoroutineScope(Dispatchers.IO).launch {
+                        // Persist the choice before resolving depots: the filter reads the
+                        // language from the container and the game launches with it later.
+                        ContainerUtils.ensureContainerLanguage(context, libraryItem.appId, language)
                         SteamService.downloadApp(gameId, dlcAppIds, branch = branch, mode = SteamDownloadMode.INSTALL)
                     }
                 },

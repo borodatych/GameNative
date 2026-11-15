@@ -51,7 +51,6 @@ import com.winlator.core.KeyValueSet
 import com.winlator.core.StringUtils
 import com.winlator.contents.ContentProfile
 import com.winlator.xenvironment.components.PulseAudioComponent
-import java.util.Locale
 
 @Composable
 fun GeneralTabContent(
@@ -296,16 +295,8 @@ fun GeneralTabContent(
             placeholder = { Text(text = stringResource(R.string.exec_arguments_example)) },
             singleLine = true,
         )
-        val displayNameForLanguage: (String) -> String = { code ->
-            when (code) {
-                "schinese" -> "Simplified Chinese"
-                "tchinese" -> "Traditional Chinese"
-                "koreana" -> "Korean"
-                "latam" -> "Spanish (Latin America)"
-                "brazilian" -> "Portuguese (Brazil)"
-                else -> code.replaceFirstChar { ch -> ch.titlecase(Locale.getDefault()) }
-            }
-        }
+        // Подписи языков берём из общего каталога, чтобы не держать вторую таблицу.
+        val displayNameForLanguage: (String) -> String = app.gamenative.utils.GameLanguages::displayName
         SettingsListDropdown(
             enabled = true,
             value = state.languageIndex.value,
