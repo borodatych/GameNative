@@ -29,7 +29,7 @@ data class ContainerData(
     val pulseaudioLowLatency: Boolean = false,
     val micEnabled: Boolean = false,
     val wincomponents: String = Container.DEFAULT_WINCOMPONENTS,
-    val drives: String = Container.DEFAULT_DRIVES,
+    val drives: String = Container.getDefaultDrives(),
     val execArgs: String = "",
     val executablePath: String = "",
     val installPath: String = "",

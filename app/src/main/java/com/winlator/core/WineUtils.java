@@ -45,8 +45,9 @@ public abstract class WineUtils {
             if (!currentDrives.contains("D:")) {
                 missingDrives += "D:" + android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
             }
+            // Пакет зависит от сборки, поэтому E: собираем из реального каталога данных.
             if (!currentDrives.contains("E:")) {
-                missingDrives += "E:/data/data/app.gamenative/storage";
+                missingDrives += "E:" + Container.getAppDataDir() + "/storage";
             }
             String updatedDrives = missingDrives + currentDrives;
             container.setDrives(updatedDrives);
@@ -58,7 +59,9 @@ public abstract class WineUtils {
         for (String[] drive : container.drivesIterator()) {
             File linkTarget = new File(drive[1]);
             String path = linkTarget.getAbsolutePath();
-            if (!linkTarget.isDirectory() && path.endsWith("/app.gamenative/storage")) {
+            // Имя пакета в хвосте пути не проверяем: у форка оно другое, а каталог создать всё равно нужно.
+            // Достаточно того, что путь ведёт в storage внутри каталога данных какого-то пакета.
+            if (!linkTarget.isDirectory() && path.matches(".*/data/(data|user/\\d+)/[^/]+/storage")) {
                 linkTarget.mkdirs();
                 FileUtils.chmod(linkTarget, 0771);
             }

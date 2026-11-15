@@ -242,6 +242,9 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
 
         envVars.put("TZ", tzId);
         envVars.put("HOME", ImageFs.HOME_PATH);
+        // Патченный Proton форка строит drive Z: и ищет libsteamclient.so по этой переменной.
+        // Нужен абсолютный путь хоста к корню imagefs со слэшем на конце, для любого пакета.
+        envVars.put("WINE_ANDROID_IMAGEFS", rootDir.getAbsolutePath() + "/");
         envVars.put("USER", ImageFs.USER);
         envVars.put("TMPDIR", "/tmp");
         envVars.put("LC_ALL", "en_US.utf8");
