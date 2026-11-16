@@ -893,6 +893,15 @@
     <!--Game Feedback Dialog -->
     <string name="game_feedback_game_run">How did the game run?</string>
     <string name="game_feedback_issues_question">Select any issues you encountered:</string>
+    <string name="game_feedback_tag_controller_issues">Controller issues</string>
+    <string name="game_feedback_tag_no_graphics">No graphics</string>
+    <string name="game_feedback_tag_cloud_saves_missing">Cloud saves missing</string>
+    <string name="game_feedback_tag_graphics_glitches">Graphics glitches</string>
+    <string name="game_feedback_tag_audio_glitches">Audio glitches</string>
+    <string name="game_feedback_tag_does_not_open">Does not open</string>
+    <string name="game_feedback_tag_directx_error">DirectX error</string>
+    <string name="game_feedback_submit">Submit</string>
+    <string name="game_feedback_close">Close</string>
 
 
     <!-- Profile & Menu -->

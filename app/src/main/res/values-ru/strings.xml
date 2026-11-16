@@ -538,6 +538,15 @@
     <string name="game_executable_not_found_title">Невозможно запустить</string>
     <string name="game_feedback_game_run">Как работала игра?</string>
     <string name="game_feedback_issues_question">Выберите проблемы, которые вы встретили:</string>
+    <string name="game_feedback_tag_controller_issues">Проблемы с контроллером</string>
+    <string name="game_feedback_tag_no_graphics">Нет изображения</string>
+    <string name="game_feedback_tag_cloud_saves_missing">Пропали облачные сохранения</string>
+    <string name="game_feedback_tag_graphics_glitches">Артефакты графики</string>
+    <string name="game_feedback_tag_audio_glitches">Проблемы со звуком</string>
+    <string name="game_feedback_tag_does_not_open">Не запускается</string>
+    <string name="game_feedback_tag_directx_error">Ошибка DirectX</string>
+    <string name="game_feedback_submit">Отправить</string>
+    <string name="game_feedback_close">Закрыть</string>
     <string name="game_information">Информация об игре</string>
     <string name="game_not_installed_message">%s не установлена. Пожалуйста, установите игру перед запуском.</string>
     <string name="intent_launch_failed">Не удалось запустить игру: недействительный ярлык запуска</string>

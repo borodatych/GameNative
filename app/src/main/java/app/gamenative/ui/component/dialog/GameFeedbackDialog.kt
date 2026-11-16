@@ -106,6 +106,7 @@ fun GameFeedbackDialog(
                         ) {
                             for (tag in GameFeedbackDialogState.AVAILABLE_TAGS) {
                                 val isSelected = tag in state.selectedTags
+                                val tagLabelRes = GameFeedbackDialogState.TAG_LABEL_RES[tag]
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = {
@@ -118,7 +119,12 @@ fun GameFeedbackDialog(
                                     },
                                     label = {
                                         Text(
-                                            text = tag.replace("_", " ").capitalize(),
+                                            // Незнакомый ключ показываем как раньше — без перевода
+                                            text = if (tagLabelRes != null) {
+                                                stringResource(tagLabelRes)
+                                            } else {
+                                                tag.replace("_", " ").capitalize()
+                                            },
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     },
@@ -154,7 +160,7 @@ fun GameFeedbackDialog(
                         horizontalArrangement = Arrangement.End
                     ) {
                         TextButton(onClick = onDismiss) {
-                            Text(state.dismissBtnText)
+                            Text(state.dismissBtnText ?: stringResource(R.string.game_feedback_close))
                         }
 
                         Button(
@@ -165,7 +171,7 @@ fun GameFeedbackDialog(
                             modifier = Modifier.padding(start = 8.dp),
                             enabled = state.rating > 0 // Require at least a rating
                         ) {
-                            Text(state.confirmBtnText)
+                            Text(state.confirmBtnText ?: stringResource(R.string.game_feedback_submit))
                         }
                     }
                 }
