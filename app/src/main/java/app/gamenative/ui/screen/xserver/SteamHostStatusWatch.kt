@@ -35,7 +35,7 @@ object SteamHostStatusWatch {
                             "logon" -> context.getString(R.string.steam_logging_in)
                             "connecting" -> context.getString(R.string.steam_connecting)
                             "retry" -> context.getString(R.string.steam_retrying_login)
-                            "launching" -> "Launching game..."
+                            "launching" -> context.getString(R.string.splash_launching_game)
                             else -> null
                         }
                         if (text != null) PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(text))

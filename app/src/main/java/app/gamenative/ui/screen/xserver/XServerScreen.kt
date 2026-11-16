@@ -4297,6 +4297,7 @@ private fun shiftXEnvironmentToContext(
 }
 
 private fun runSteamHostCegPass(
+    context: Context,
     appId: String,
     imageFs: ImageFs,
     launcher: GuestProgramLauncherComponent,
@@ -4315,14 +4316,14 @@ private fun runSteamHostCegPass(
     progressFile.delete()
     val batch = File(imageFs.wineprefix, "drive_c/steamhost_ceg.bat")
     batch.writeText("@\"C:\\Program Files (x86)\\Steam\\steam.exe\"\r\n")
-    PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Preparing game executable..."))
+    PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_preparing_executable)))
     launcher.envVars.put("STEAMHOST_CEG_ONLY", "1")
     val passStartedAt = System.currentTimeMillis()
     val pollProgress = AtomicBoolean(true)
     thread(name = "steamhost-ceg-progress") {
         var lastText = ""
         while (pollProgress.get()) {
-            val text = cegSplashText(progressFile, passStartedAt)
+            val text = cegSplashText(context, progressFile, passStartedAt)
             if (text != lastText) {
                 lastText = text
                 PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(text))
@@ -4355,23 +4356,34 @@ private fun runSteamHostCegPass(
     }
 }
 
-private fun cegSplashText(progressFile: File, startedAt: Long): String {
+// Текст заставки для прохода CEG: этап работы steamhost и прогресс скачивания.
+private fun cegSplashText(context: Context, progressFile: File, startedAt: Long): String {
     val elapsed = (System.currentTimeMillis() - startedAt) / 1000
     val fields = runCatching { progressFile.readText().trim().split(' ') }.getOrNull()
     if (fields == null || fields.size < 6) {
-        return "Preparing game executable... signing in to Steam (${elapsed}s)"
+        return context.getString(R.string.splash_ceg_sign_in, elapsed)
     }
     val jobsDone = fields[1].toIntOrNull() ?: 0
     val jobs = fields[2].toIntOrNull() ?: 0
     val bytes = fields[3].toLongOrNull() ?: 0L
     val total = fields[4].toLongOrNull() ?: 0L
-    val progress = if (total > 0) {
-        "downloading %.1f / %.1f MB".format(bytes / 1_000_000.0, total / 1_000_000.0)
+    val hasFiles = jobs > 1
+    val currentFile = (jobsDone + 1).coerceAtMost(jobs)
+    return if (total > 0) {
+        val doneMb = bytes / 1_000_000.0
+        val totalMb = total / 1_000_000.0
+        if (hasFiles) {
+            context.getString(R.string.splash_ceg_downloading_file, doneMb, totalMb, currentFile, jobs, elapsed)
+        } else {
+            context.getString(R.string.splash_ceg_downloading, doneMb, totalMb, elapsed)
+        }
     } else {
-        "waiting for Steam's DRM service"
+        if (hasFiles) {
+            context.getString(R.string.splash_ceg_waiting_drm_file, currentFile, jobs, elapsed)
+        } else {
+            context.getString(R.string.splash_ceg_waiting_drm, elapsed)
+        }
     }
-    val files = if (jobs > 1) ", file ${(jobsDone + 1).coerceAtMost(jobs)} of $jobs" else ""
-    return "Preparing game executable... $progress$files (${elapsed}s)"
 }
 
 private fun setupXEnvironment(
@@ -4624,18 +4636,18 @@ private fun setupXEnvironment(
                 onError = onGameLaunchError
             )
             if (container.isLaunchHeadlessSteam && gameSource == GameSource.STEAM && !bootToContainer) {
-                runSteamHostCegPass(appId, imageFs, guestProgramLauncherComponent, onGameLaunchError)
+                runSteamHostCegPass(context, appId, imageFs, guestProgramLauncherComponent, onGameLaunchError)
             }
             if (guestProgramLauncherComponent is BionicProgramLauncherComponent && !bootToContainer && !testGraphics) {
                 FossilizeManager.prepareBeforeLaunch(context, container, guestProgramLauncherComponent) { launchCancel.get() }
             }
             if (preInstallCommands.isNotEmpty()) {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing prerequisites..."))
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_installing_prerequisites)))
             } else if (container.isLaunchHeadlessSteam && gameSource == GameSource.STEAM && !bootToContainer) {
                 PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.steam_starting)))
                 SteamHostStatusWatch.start(context, imageFs, onGameLaunchError)
             } else {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Launching game..."))
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_launching_game)))
             }
         }
 
@@ -4781,9 +4793,9 @@ private fun setupXEnvironment(
                 PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.steam_starting)))
                 SteamHostStatusWatch.start(context, ImageFs.find(context), onGameLaunchError)
             } else if (nextRemaining.isEmpty()) {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Launching game..."))
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_launching_game)))
             } else {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing prerequisites..."))
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_installing_prerequisites)))
             }
             chainPreInstallSteps(nextRemaining)
             guestProgramLauncherComponent.start()
@@ -5720,7 +5732,7 @@ private fun unpackExecutableFile(
     WineMono.markOwnInstall(container, imageFs)
     if (needsUnpacking || containerVariantChanged){
         try {
-            PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing Mono..."))
+            PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_installing_mono)))
             val monoOutput = WineMono.install(container, imageFs, monoMsi, guestProgramLauncherComponent)
             output.append(monoOutput)
             Timber.i("Result of mono command " + output)
@@ -5749,7 +5761,7 @@ private fun unpackExecutableFile(
 
         try {
             if (!container.isLaunchRealSteam && !container.isLaunchBionicSteam) {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM..."))
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_handling_drm)))
             }
             // a:/.../GameDir/orig_dll_path.txt  (same dir as the EXE inside A:)
             val origTxtFile  = File("${imageFs.wineprefix}/dosdevices/a:/orig_dll_path.txt")
@@ -5814,10 +5826,10 @@ private fun unpackExecutableFile(
             if (exePaths.isEmpty()) {
                 Timber.w("No executable path set, skipping Steamless")
             } else {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM..."))
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_handling_drm)))
                 for ((index, executablePath) in exePaths.withIndex()) {
                     if (exePaths.size > 1) {
-                        PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM (${index + 1}/${exePaths.size})"))
+                        PluviaApp.events.emit(AndroidEvent.SetBootingSplashText(context.getString(R.string.splash_handling_drm_progress, index + 1, exePaths.size)))
                     }
                     var batchFile: File? = null
                     try {
