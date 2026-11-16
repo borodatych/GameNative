@@ -152,6 +152,21 @@ object GameDownloadService {
         }
         val resolvedDepots = resolutions.filterIsInstance<DepotResolution.Resolved>()
             .map { it.depot }
+
+        // Депо, чей запрошенный манифест уже записан в completed/, движок пропускает без
+        // единого callback (VERIFY не пропускает никогда). Их байты уже на диске, поэтому
+        // учитываем их сразу — иначе на докачке процент считался бы только по депотам,
+        // которые движок обошёл в этом прогоне.
+        if (mode != SteamDownloadMode.VERIFY) {
+            val installed = DepotManifestFiles.installedManifests(installDir)
+            for (resolved in resolvedDepots) {
+                val installedGid = installed[resolved.depotId]?.toLong() ?: continue
+                if (installedGid == resolved.gid) {
+                    downloadInfo.seedInstalledDepot(resolved.depotId)
+                }
+            }
+        }
+
         for (resolved in resolvedDepots) {
             val depot = depotById.getValue(resolved.depotId)
             depotsJson.put(
@@ -261,9 +276,8 @@ object GameDownloadService {
         downloadInfo: DownloadInfo,
         parentScope: CoroutineScope,
     ) {
-        // Track cumulative per-depot bytes to calculate deltas (same unit the engine reports:
-        // decompressed chunk bytes written; totalExpectedBytes is the uncompressed depot size
-        // set in SteamService — same unit, so the bar reaches 100% exactly at completion).
+        // High-water по каждому депоту в тех же байтах, что и размер депота (движок считает
+        // записанные/уже лежащие байты). Знаменатель прогресса — все депоты прогона.
         val depotCumulativeBytes = ConcurrentHashMap<Int, Long>()
         // First progress callback ends the "Preparing depots" key-prep phase (owner-pinned, so a
         // late callback from an unwound run cannot wipe a newer attempt's message).
@@ -297,27 +311,19 @@ object GameDownloadService {
                     // Verify sweep finished, real chunks are flowing — drop the verify status.
                     downloadInfo.updateStatusMessage(null)
                 }
-                if (verifying) {
-                    // Verified-existing bytes: these were already counted in the persisted
-                    // snapshot this run resumed from. Crediting them again double-counts and
-                    // the bar races to 100% while remaining chunks are still downloading.
-                    // Only track the high-water so later real downloads delta from it.
-                    // (Verify PROGRESS is reported through onVerifying's file counters.)
-                    depotCumulativeBytes.merge(depotId, depotDone, ::maxOf)
-                } else {
-                    // Parallel callbacks can arrive out of order; read-check-set must be
-                    // atomic or two threads credit overlapping deltas. Clamp to the
-                    // high-water so a late, smaller depotDone credits nothing.
-                    val delta = synchronized(depotCumulativeBytes) {
-                        val previous = depotCumulativeBytes[depotId] ?: 0L
-                        val newHigh = maxOf(previous, depotDone)
-                        depotCumulativeBytes[depotId] = newHigh
-                        newHigh - previous
-                    }
-                    if (delta > 0L) {
-                        downloadInfo.updateBytesDownloaded(delta, System.currentTimeMillis())
-                    }
+                // depotDone — это уже лежащие байты депота (включая перепроверенные и
+                // «доверенные» файлы), а не приращение. Держим high-water и отдаём его в
+                // DownloadInfo абсолютным значением: иначе байты, уже учтённые снимком
+                // прошлого прогона, считались второй раз и бар упирался в 100%, пока
+                // последний депот ещё качался. Одинаково для verifying и обычного прогресса:
+                // считаем один раз то, что реально есть на диске.
+                val (highWater, totalDone) = synchronized(depotCumulativeBytes) {
+                    val newHigh = maxOf(depotCumulativeBytes[depotId] ?: 0L, depotDone)
+                    depotCumulativeBytes[depotId] = newHigh
+                    newHigh to depotCumulativeBytes.values.sum()
                 }
+                downloadInfo.setBytesDownloaded(totalDone)
+                downloadInfo.reportDepotProgress(depotId, highWater, depotTotal)
                 if (depotTotal > 0L) {
                     depotIdToIndex[depotId]?.let { index ->
                         downloadInfo.setProgress(

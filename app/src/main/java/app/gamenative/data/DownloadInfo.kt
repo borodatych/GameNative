@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import timber.log.Timber
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -40,6 +41,17 @@ class DownloadInfo(
     private var totalExpectedBytes: Long = 0L
     private var bytesDownloaded: Long = 0L
     private var persistencePath: String? = null
+
+    // Steam: прогресс считаем по депотам прогона. Байтовый счётчик смешивал байты прошлых
+    // прогонов (снимок на диске) с байтами, которые движок заново сообщает как уже лежащие,
+    // поэтому бар упирался в 100% задолго до конца загрузки.
+    private val depotDoneBytes = ConcurrentHashMap<Int, Long>()
+    private val depotTotalBytes = ConcurrentHashMap<Int, Long>()
+    private val depotExpectedBytes = ConcurrentHashMap<Int, Long>()
+    @Volatile
+    private var progressCompleted: Boolean = false
+    @Volatile
+    private var lastReportedProgress: Float = 0f
 
     private data class SpeedSample(val timeMs: Long, val bytes: Long)
 
@@ -83,6 +95,20 @@ class DownloadInfo(
     }
 
     fun getProgress(): Float {
+        // Steam отчитывается по депотам — считаем сделанные байты по всем депотам прогона.
+        // Остальные магазины идут старым байтовым путём ниже.
+        if (depotExpectedBytes.isNotEmpty() || depotDoneBytes.isNotEmpty()) {
+            val computed = computeDownloadProgress(
+                doneBytesByDepot = depotDoneBytes,
+                totalBytesByDepot = depotTotalBytes,
+                expectedBytesByDepot = depotExpectedBytes,
+                completed = progressCompleted,
+            )
+            // Не откатываем видимый процент, когда движок уточняет размер депота.
+            lastReportedProgress = maxOf(lastReportedProgress, computed)
+            return lastReportedProgress
+        }
+
         // Always use bytes-based progress when available for accuracy
         if (totalExpectedBytes > 0L) {
             val bytesProgress = (bytesDownloaded.toFloat() / totalExpectedBytes.toFloat()).coerceIn(0f, 1f)
@@ -112,6 +138,56 @@ class DownloadInfo(
 
     fun setTotalExpectedBytes(bytes: Long) {
         totalExpectedBytes = if (bytes < 0L) 0L else bytes
+    }
+
+    /**
+     * Ожидаемые размеры ВСЕХ депотов прогона (оценка appinfo). Движок уточнит их своими
+     * total по мере отчётов; до тех пор они держат знаменатель полным.
+     */
+    fun setExpectedDepotBytes(expectedBytes: Map<Int, Long>) {
+        depotExpectedBytes.clear()
+        depotExpectedBytes.putAll(expectedBytes.filterValues { it > 0L })
+        emitProgressChange()
+    }
+
+    /**
+     * Отчёт движка по одному депоту. [doneBytes] — объём уже лежащих байтов депота, а не
+     * приращение: держим монотонный high-water, чтобы переупорядоченные/повторные отчёты
+     * не считались дважды.
+     */
+    fun reportDepotProgress(depotId: Int, doneBytes: Long, totalBytes: Long) {
+        if (!isActive) return
+        depotDoneBytes.merge(depotId, doneBytes.coerceAtLeast(0L), ::maxOf)
+        if (totalBytes > 0L) depotTotalBytes[depotId] = totalBytes
+        emitProgressChange()
+    }
+
+    /**
+     * Учесть депот, который движок пропустит как уже установленный: callback по нему не
+     * придёт, а его байты уже на диске и входят в знаменатель.
+     */
+    fun seedInstalledDepot(depotId: Int) {
+        val expected = depotExpectedBytes[depotId] ?: return
+        depotDoneBytes.merge(depotId, expected, ::maxOf)
+        emitProgressChange()
+    }
+
+    /** Движок реально завершил прогон — только теперь можно показать 100%. */
+    fun markProgressCompleted() {
+        progressCompleted = true
+        emitProgressChange()
+    }
+
+    /**
+     * Абсолютное значение счётчика (Steam): движок сообщает объём уже лежащих байтов, поэтому
+     * дельты к снимку прошлого прогона удвоили бы прогресс.
+     */
+    fun setBytesDownloaded(value: Long) {
+        if (!isActive) return
+        val newValue = value.coerceAtLeast(0L)
+        if (newValue <= bytesDownloaded) return
+        bytesDownloaded = newValue
+        addSpeedSample(System.currentTimeMillis())
     }
 
     /**

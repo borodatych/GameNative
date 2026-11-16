@@ -1869,6 +1869,35 @@ class SteamService : Service(), IChallengeUrlChanged {
         }
 
         /**
+         * Размер депота для знаменателя прогресса. Повторяет цепочку [resolveManifestGid]:
+         * движок качает депот, даже когда манифеста под выбранную ветку нет — он берёт
+         * public-манифест или манифесты из appinfo владельца shared-депота. Без этих
+         * фолбэков депот давал 1 байт в знаменателе, и бар показывал 100%, пока он ещё
+         * качался (движок уточняет total своим отчётом, но только когда дойдёт до депота).
+         */
+        private fun depotSizeForProgress(appId: Int, depot: DepotInfo, branch: String): Long {
+            val manifest = depot.manifests[branch]
+                ?: depot.encryptedManifests[branch]
+                ?: depot.manifests["public"]
+                ?: owningDepotManifests(appId, depot)?.let { ownerDepot ->
+                    ownerDepot.manifests[branch]
+                        ?: ownerDepot.encryptedManifests[branch]
+                        ?: ownerDepot.manifests["public"]
+                }
+            return manifest?.size?.coerceAtLeast(1L) ?: 1L
+        }
+
+        private fun owningDepotManifests(appId: Int, depot: DepotInfo): DepotInfo? {
+            val ownerAppId = when {
+                depot.depotFromApp != INVALID_APP_ID -> depot.depotFromApp
+                depot.dlcAppId != INVALID_APP_ID -> depot.dlcAppId
+                else -> return null
+            }
+            if (ownerAppId == appId) return null
+            return getAppInfoOf(ownerAppId)?.depots?.get(depot.depotId)
+        }
+
+        /**
          * Resolve best matching directory: completed install > partial > null.
          * Extracted for testability — called by [getAppDirPath].
          */
@@ -2795,16 +2824,19 @@ class SteamService : Service(), IChallengeUrlChanged {
                 // credits decompressed chunk bytes written, so the progress bar and ETA must be
                 // in the same unit (previously getDownloadBytes = compressed → the bar could
                 // clamp at 100% before the depot was actually done).
-                val sizes = selectedDepots.map { (_, depot) ->
-                    val mInfo = depot.manifests[branch]
-                        ?: depot.encryptedManifests[branch]
-                        ?: return@map 1L
-                    mInfo.size.coerceAtLeast(1L)
+                //
+                // Размер каждого депота прогона — знаменатель прогресса. Раньше депот без
+                // манифеста под выбранную ветку получал 1 байт, хотя движок его всё равно
+                // качал (фолбэк на public/манифест владельца), и бар показывал 100%, пока
+                // такой депот ещё загружался.
+                val depotSizes = selectedDepots.mapValues { (_, depot) ->
+                    depotSizeForProgress(appId, depot, branch)
                 }
-                sizes.forEachIndexed { i, bytes -> di.setWeight(i, bytes) }
+                depotSizes.values.forEachIndexed { i, bytes -> di.setWeight(i, bytes) }
+                di.setExpectedDepotBytes(depotSizes)
 
                 // Total expected size (used for ETA based on recent download speed)
-                val totalBytes = sizes.sum()
+                val totalBytes = depotSizes.values.sum()
                 di.setTotalExpectedBytes(totalBytes)
 
                 // Load persisted bytes downloaded value on resume
@@ -2890,6 +2922,9 @@ class SteamService : Service(), IChallengeUrlChanged {
                             processWorkers = speedConfig.maxDecompress,
                             parentScope = this,
                         )
+
+                        // Движок отработал — только теперь бар может показать 100%.
+                        di.markProgressCompleted()
 
                         // Transfer is complete - unregister from GameDownloadService
                         GameDownloadService.unregisterDownload(instance?.applicationContext!!, GameSource.STEAM, appId.toString())

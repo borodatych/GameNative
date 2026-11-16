@@ -457,7 +457,7 @@ fun GameManagerDialog(
                         ) {
                             if (branch != null && branch != "public") {
                                 Text(
-                                    text = "Installing the \"$branch\" branch",
+                                    text = stringResource(R.string.common_installing_branch, branch),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -521,7 +521,13 @@ fun GameManagerDialog(
                                         }
                                     ) {
                                         Text(
-                                            text = if (allSelectableSelected) "Deselect all" else "Select all"
+                                            text = stringResource(
+                                                if (allSelectableSelected) {
+                                                    R.string.common_deselect_all
+                                                } else {
+                                                    R.string.common_select_all
+                                                },
+                                            )
                                         )
                                     }
                                 }
@@ -540,7 +546,11 @@ fun GameManagerDialog(
                                             // Add size display
                                             val (downloadSize, installSize) = getSizeInfo(dlcAppId)
                                             Text(
-                                                text = "$downloadSize download • $installSize install",
+                                                text = stringResource(
+                                                    R.string.common_download_install_sizes,
+                                                    downloadSize,
+                                                    installSize,
+                                                ),
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                                             )

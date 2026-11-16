@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -239,7 +240,7 @@ fun WorkshopManagerDialog(
                             color = Color.White
                         )
                         Text(
-                            text = "Workshop Mods",
+                            text = stringResource(R.string.workshop_title),
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color.White.copy(alpha = 0.9f)
                         )
@@ -254,12 +255,20 @@ fun WorkshopManagerDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                        placeholder = { Text("Search mods...") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                        placeholder = { Text(stringResource(R.string.workshop_search_mods)) },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.Search,
+                                contentDescription = stringResource(R.string.search),
+                            )
+                        },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Clear search")
+                                    Icon(
+                                        Icons.Default.Clear,
+                                        contentDescription = stringResource(R.string.workshop_clear_search),
+                                    )
                                 }
                             }
                         },
@@ -282,7 +291,7 @@ fun WorkshopManagerDialog(
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     CircularProgressIndicator(color = PluviaTheme.progressColor)
                                     Text(
-                                        text = "Loading subscribed mods...",
+                                        text = stringResource(R.string.workshop_loading_subscribed_mods),
                                         modifier = Modifier.padding(top = 16.dp),
                                         color = Color.White.copy(alpha = 0.7f)
                                     )
@@ -298,7 +307,7 @@ fun WorkshopManagerDialog(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "Failed to fetch workshop subscriptions. Check your connection and try again.",
+                                    text = stringResource(R.string.workshop_fetch_failed),
                                     color = MaterialTheme.colorScheme.error
                                 )
                             }
@@ -312,7 +321,7 @@ fun WorkshopManagerDialog(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "No subscribed workshop mods found for this game.",
+                                    text = stringResource(R.string.workshop_no_subscribed_mods),
                                     color = Color.White.copy(alpha = 0.7f)
                                 )
                             }
@@ -349,7 +358,7 @@ fun WorkshopManagerDialog(
                                         )
                                         Spacer(Modifier.width(6.dp))
                                         Text(
-                                            text = "Override Mod Folder",
+                                            text = stringResource(R.string.workshop_override_mod_folder),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
@@ -363,7 +372,13 @@ fun WorkshopManagerDialog(
                                         }
                                 ) {
                                     Text(
-                                        text = if (allSelected) "Deselect all" else "Select all"
+                                        text = stringResource(
+                                            if (allSelected) {
+                                                R.string.common_deselect_all
+                                            } else {
+                                                R.string.common_select_all
+                                            },
+                                        )
                                     )
                                 }
                                 }
@@ -390,7 +405,7 @@ fun WorkshopManagerDialog(
                                         else -> workshopModPath
                                     }
                                 } else {
-                                    "Automatic"
+                                    stringResource(R.string.common_automatic)
                                 }
                                 Text(
                                     text = modFolderDisplay,
@@ -453,7 +468,7 @@ fun WorkshopManagerDialog(
                                                         .format(Date(item.timeUpdated * 1000L))
                                                 }
                                                 Text(
-                                                    text = "Updated $dateStr",
+                                                    text = stringResource(R.string.workshop_updated, dateStr),
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                                                 )
@@ -503,7 +518,12 @@ fun WorkshopManagerDialog(
                         }
                         Text(
                             modifier = Modifier.weight(0.5f),
-                            text = "$selectedCount of ${workshopItems.size} mods selected$sizeText",
+                            text = stringResource(
+                                R.string.workshop_mods_selected,
+                                selectedCount,
+                                workshopItems.size,
+                                sizeText,
+                            ),
                             color = Color.White.copy(alpha = 0.7f),
                         )
                         Button(
@@ -514,7 +534,7 @@ fun WorkshopManagerDialog(
                                 onSave(enabledIds)
                             }
                         ) {
-                            Text("Save")
+                            Text(stringResource(R.string.save))
                         }
                     }
                 }
@@ -557,10 +577,29 @@ private fun FolderPickerDialog(
     onClear: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val roots = remember(gameRootDir, winePrefix) {
+    // Подписи корней — ресурсы; они же ключи remember, иначе после смены языка список
+    // остался бы со старыми подписями.
+    val gameDirLabel = stringResource(R.string.workshop_folder_game_directory)
+    val cDriveLabel = stringResource(R.string.workshop_folder_c_drive)
+    val documentsLabel = stringResource(R.string.workshop_folder_my_documents)
+    val myGamesLabel = stringResource(R.string.workshop_folder_my_games)
+    val roamingLabel = stringResource(R.string.workshop_folder_appdata_roaming)
+    val localLabel = stringResource(R.string.workshop_folder_appdata_local)
+    val localLowLabel = stringResource(R.string.workshop_folder_appdata_local_low)
+    val roots = remember(
+        gameRootDir,
+        winePrefix,
+        gameDirLabel,
+        cDriveLabel,
+        documentsLabel,
+        myGamesLabel,
+        roamingLabel,
+        localLabel,
+        localLowLabel,
+    ) {
         buildList {
             if (gameRootDir?.isDirectory == true) {
-                add(FolderRoot("Game Directory", Icons.Default.SportsEsports, gameRootDir))
+                add(FolderRoot(gameDirLabel, Icons.Default.SportsEsports, gameRootDir))
             }
             if (winePrefix.isNotEmpty()) {
                 val usersDir = File(winePrefix, "drive_c/users")
@@ -575,17 +614,17 @@ private fun FolderPickerDialog(
                     steamuser
                 }
                 val driveC = File(winePrefix, "drive_c")
-                if (driveC.isDirectory) add(FolderRoot("C: Drive", Icons.Default.Computer, driveC))
+                if (driveC.isDirectory) add(FolderRoot(cDriveLabel, Icons.Default.Computer, driveC))
                 val docs = File(userDir, "Documents")
-                if (docs.isDirectory) add(FolderRoot("My Documents", Icons.Default.Description, docs))
+                if (docs.isDirectory) add(FolderRoot(documentsLabel, Icons.Default.Description, docs))
                 val myGames = File(userDir, "Documents/My Games")
-                if (myGames.isDirectory) add(FolderRoot("My Games", Icons.Default.Gamepad, myGames))
+                if (myGames.isDirectory) add(FolderRoot(myGamesLabel, Icons.Default.Gamepad, myGames))
                 val roaming = File(userDir, "AppData/Roaming")
-                if (roaming.isDirectory) add(FolderRoot("AppData / Roaming", Icons.Default.Settings, roaming))
+                if (roaming.isDirectory) add(FolderRoot(roamingLabel, Icons.Default.Settings, roaming))
                 val local = File(userDir, "AppData/Local")
-                if (local.isDirectory) add(FolderRoot("AppData / Local", Icons.Default.SnippetFolder, local))
+                if (local.isDirectory) add(FolderRoot(localLabel, Icons.Default.SnippetFolder, local))
                 val localLow = File(userDir, "AppData/LocalLow")
-                if (localLow.isDirectory) add(FolderRoot("AppData / LocalLow", Icons.Default.Inventory2, localLow))
+                if (localLow.isDirectory) add(FolderRoot(localLowLabel, Icons.Default.Inventory2, localLow))
             }
         }
     }
@@ -646,7 +685,13 @@ private fun FolderPickerDialog(
                 ) {
                     Column {
                         Text(
-                            text = if (currentDir == null) "Select Mod Folder" else "Browse",
+                            text = stringResource(
+                                if (currentDir == null) {
+                                    R.string.workshop_select_mod_folder
+                                } else {
+                                    R.string.common_browse
+                                },
+                            ),
                             style = MaterialTheme.typography.headlineSmall,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -711,7 +756,7 @@ private fun FolderPickerDialog(
                         ) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
+                                contentDescription = stringResource(R.string.back),
                                 modifier = Modifier.size(18.dp),
                                 tint = MaterialTheme.colorScheme.primary,
                             )
@@ -799,7 +844,7 @@ private fun FolderPickerDialog(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
-                                    text = "No browsable locations found.",
+                                    text = stringResource(R.string.workshop_no_browsable_locations),
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                                 )
                             }
@@ -836,7 +881,7 @@ private fun FolderPickerDialog(
                                     )
                                     Spacer(Modifier.height(8.dp))
                                     Text(
-                                        text = "No subdirectories",
+                                        text = stringResource(R.string.workshop_no_subdirectories),
                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                                         style = MaterialTheme.typography.bodyMedium,
                                     )
@@ -892,11 +937,14 @@ private fun FolderPickerDialog(
                 ) {
                     if (currentPath.isNotEmpty()) {
                         TextButton(onClick = onClear) {
-                            Text("Clear", color = MaterialTheme.colorScheme.error)
+                            Text(
+                                stringResource(R.string.common_clear),
+                                color = MaterialTheme.colorScheme.error,
+                            )
                         }
                     }
                     TextButton(onClick = onDismiss) {
-                        Text("Cancel")
+                        Text(stringResource(R.string.cancel))
                     }
                     if (currentDir != null) {
                         Button(
@@ -905,7 +953,7 @@ private fun FolderPickerDialog(
                             },
                             modifier = Modifier.padding(start = 8.dp),
                         ) {
-                            Text("Select")
+                            Text(stringResource(R.string.common_select))
                         }
                     }
                 }
