@@ -8,7 +8,8 @@ package app.gamenative.service.download
  * already records at the requested build; UPDATE/VERIFY always walk, re-hashing existing chunks
  * against the manifest), whether the previous build is diffed for a per-file delta and a
  * removed-file sweep (UPDATE, when the store has one and it is usable), and whether the run can
- * move the install to a different build (UPDATE yes, VERIFY never).
+ * move the install to a different build (UPDATE yes; VERIFY only for a depot that has no installed
+ * record to pin to).
  *
  * Steam itself has no such split — its client only ever installs/updates to the *current* build,
  * and "verify integrity" verifies against the manifest of the build you have installed. Passing a
@@ -27,9 +28,9 @@ enum class SteamDownloadMode {
     /** Verify: pin every depot to the build the manifest store RECORDS AS INSTALLED
      *  (`.DepotDownloader/completed/` — see [app.gamenative.utils.DepotManifestFiles]) — never the
      *  latest one; that manifest is already on disk, so a verify fetches nothing. Chunks
-     *  are re-hashed against that manifest and only missing/corrupt ones are re-fetched, so a
-     *  verify can never move the install to a different build. Depots with no recorded manifest
-     *  are skipped; if none is recorded at all the run fails with a message telling the user to
-     *  update instead. */
+     *  are re-hashed against that manifest and only missing/corrupt ones are re-fetched.
+     *  У депота без записи (игру перенесли из другого лаунчера) сверять не с чем: он проверяется
+     *  по текущему манифесту ветки, как UPDATE, и после успеха записывается установленным —
+     *  отказ здесь оставил бы такую игру без единого способа починиться из интерфейса. */
     VERIFY,
 }

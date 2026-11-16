@@ -2249,7 +2249,8 @@ class SteamService : Service(), IChallengeUrlChanged {
          * Re-run a download for [appId] in [mode] — what the app menu's "Verify Files" and
          * "Update" both funnel through. A transfer already in progress is RESUMED as-is (its
          * mode was chosen when it started); otherwise the run uses [mode], which is the whole
-         * point of the split: VERIFY repairs the installed build, UPDATE moves to the current one.
+         * point of the split: VERIFY repairs the installed build (a depot with no installed record
+         * is checked against the branch's current manifest), UPDATE moves to the current one.
          */
         fun downloadApp(appId: Int, mode: SteamDownloadMode): DownloadInfo? {
             val currentDownloadInfo = downloadJobs[appId]
@@ -2730,7 +2731,7 @@ class SteamService : Service(), IChallengeUrlChanged {
             }
 
             // Depots from DLC App
-            var dlcAppDepots = downloadableDepots.filter { (_, depot) ->
+            val dlcAppDepots = downloadableDepots.filter { (_, depot) ->
                 !mainAppDepots.map { it.key }.contains(depot.depotId) &&
                 userSelectedDlcAppIds.contains(depot.dlcAppId) && indirectDlcAppIds.contains(depot.dlcAppId) && hasDepotContent(depot)
             }
@@ -2743,19 +2744,12 @@ class SteamService : Service(), IChallengeUrlChanged {
                 mainAppDepots = mainAppDepots.filter { it.key !in appInfo.downloadedDepots }
             }
 
-            // A VERIFY can only re-check depots whose installed manifest this app recorded. Skip
-            // the rest HERE, before the run and before completion: `completeAppDownload` records
-            // every selected depot as downloaded, so a skipped depot left in the list would make a
-            // later INSTALL skip content that was never installed.
-            if (mode == SteamDownloadMode.VERIFY && installedGids.isNotEmpty()) {
-                val before = mainAppDepots.keys + dlcAppDepots.keys
-                mainAppDepots = mainAppDepots.filterKeys { installedGids.containsKey(it) }
-                dlcAppDepots = dlcAppDepots.filterKeys { installedGids.containsKey(it) }
-                val skipped = (before - (mainAppDepots.keys + dlcAppDepots.keys)).sorted()
-                if (skipped.isNotEmpty()) {
-                    Timber.w("Verify: skipping depot(s) with no recorded manifest: $skipped")
-                }
-            }
+            // VERIFY не выбрасывает депоты без записанного установленного манифеста: у игры,
+            // перенесённой из другого лаунчера, такой записи нет ни у одного депота, а проверка
+            // ей нужна больше всего — резолвер возьмёт текущий манифест ветки, как UPDATE.
+            // В установленную запись по-прежнему попадают только депоты, которые run реально
+            // обслужил (`SteamRunOutcome.unavailableDepotIds`), так что «не тот» депот туда не
+            // просочится.
 
             // Combine main app and DLC depots
             val selectedDepots = mainAppDepots + dlcAppDepots
@@ -2863,6 +2857,10 @@ class SteamService : Service(), IChallengeUrlChanged {
 
                 notifyDownloadStarted(appId)
                 instance?.notifierOrNull?.trackDownload(di, getAppInfoOf(appId)?.name.orEmpty(), NotificationHelper.NOTIFICATION_ID_STEAM)
+
+                // Состояние ДО запуска решает, чем будет ошибка: сообщением для установленной
+                // игры или «недокачано» для незавершённой установки (см. catch ниже).
+                val wasInstalledBeforeRun = isAppInstalled(appId)
 
                 val downloadJob = instance!!.scope.launch {
                     try {
@@ -3116,6 +3114,23 @@ class SteamService : Service(), IChallengeUrlChanged {
                         selectedDepots.keys.sorted().forEachIndexed { idx, _ ->
                             di.setWeight(idx, 0)
                             di.setProgress(1f, idx)
+                        }
+                        if (keepsInstalledStateAfterFailure(wasInstalledBeforeRun)) {
+                            // Игра уже была установлена: неудачный VERIFY/UPDATE — это сообщение,
+                            // а не «недокачано». Снимаем запись и сохранённый режим, иначе UI
+                            // показывает «Возобновить», а повтор берёт тот же режим и падает тем
+                            // же местом; снимок байтов тоже нечем возобновлять.
+                            instance?.downloadingAppInfoDao?.deleteApp(appId)
+                            PrefManager.clearSteamDownloadMode(appId)
+                            di.clearPersistedBytesDownloaded(appDirPath)
+                            instance?.let { svc ->
+                                SnackbarManager.show(
+                                    svc.getString(
+                                        R.string.manifest_download_failed,
+                                        e.message ?: svc.getString(R.string.download_failed_message),
+                                    ),
+                                )
+                            }
                         }
                         removeDownloadJob(appId)
                     }
@@ -5901,3 +5916,12 @@ class SteamService : Service(), IChallengeUrlChanged {
         return Base64.encodeToString(ticket, Base64.NO_WRAP)
     }
 }
+
+/**
+ * Чем считать ошибку запуска для игры, которая была установлена ещё до него: установленной
+ * (ошибка — только сообщение), а не «недокачанной». Незавершённая установка, наоборот, обязана
+ * сохранить запись, иначе пропадёт «Возобновить». Вынесено отдельно, чтобы решение было
+ * покрыто тестом без Android-сервиса.
+ */
+internal fun keepsInstalledStateAfterFailure(wasInstalledBeforeRun: Boolean): Boolean =
+    wasInstalledBeforeRun

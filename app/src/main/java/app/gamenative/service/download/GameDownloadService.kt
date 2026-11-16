@@ -94,9 +94,9 @@ object GameDownloadService {
         installDir: String,
         mode: SteamDownloadMode,
         /**
-         * Per-depot manifest this app recorded as installed. [SteamDownloadMode.VERIFY] pins to
-         * it, and [SteamDownloadMode.UPDATE] uses it to skip depots whose current manifest is
-         * already the installed one (nothing to do there).
+         * Per-depot manifest this app recorded as installed. [SteamDownloadMode.VERIFY] pins to it;
+         * a depot missing from the record (game moved in from another launcher) is verified against
+         * the branch's current manifest instead, like UPDATE, and recorded once the run succeeds.
          */
         installedGids: Map<Int, ULong>,
         depotIdToIndex: Map<Int, Int>,
@@ -183,19 +183,13 @@ object GameDownloadService {
             resolvedDepotIds.add(resolved.depotId)
         }
         if (depotsJson.length() == 0) {
-            // No depot resolved: say WHY rather than guessing. A VERIFY whose depots have no
-            // recorded manifest is a user action ("run Update"), while a denied depot key is an
-            // entitlement problem that retrying or updating will not fix the same way.
+            // No depot resolved: say WHY rather than guessing. A denied depot key or a missing
+            // manifest gid will not be fixed by retrying the same mode, so the reasons travel in
+            // the message.
             val reasons = resolutions
                 .filterIsInstance<DepotResolution.Unavailable>()
                 .map { it.reason }
                 .distinct()
-            if (mode == SteamDownloadMode.VERIFY && installedGids.isEmpty()) {
-                throw DownloadFailedException(
-                    "Verify: no installed manifest recorded for " +
-                        "${selectedDepots.size} depot(s) — use Update to fetch the current version",
-                )
-            }
             throw DownloadFailedException(
                 "No entitled depots to download " +
                     "(all ${selectedDepots.size} selected depot(s) skipped: " +
@@ -615,17 +609,24 @@ object GameDownloadService {
         // VERIFY pins to the manifest the app recorded as installed — never PICS' current one, so
         // verifying repairs the build the user has instead of silently upgrading it. The request
         // code below is then issued for THAT gid; the depot key is per depot, not per manifest.
+        // Записи установленного может не быть (игра перенесена из другого лаунчера): тогда
+        // проверять нечего — берём текущий манифест ветки, как UPDATE, и движок запишет его
+        // в completed/ после успеха. Отказывать в проверке таким играм нельзя: им она нужнее всех.
         val gid = if (mode == SteamDownloadMode.VERIFY) {
-            val installed = installedGids[depotId]?.toLong() ?: 0L
-            if (installed == 0L) {
-                Timber.tag(TAG).w("Verify: depot $depotId has no installed manifest — skipped")
-            } else {
+            val installedGid = installedGids[depotId]
+            if (installedGid != null && installedGid != 0uL) {
                 Timber.tag(TAG).i(
                     "Verify: depot $depotId pinned to installed manifest " +
-                        java.lang.Long.toUnsignedString(installed),
+                        java.lang.Long.toUnsignedString(installedGid.toLong()),
+                )
+            } else {
+                Timber.tag(TAG).w(
+                    "Verify: depot $depotId has no installed manifest — checking against branch $branch",
                 )
             }
-            installed
+            verifyManifestGid(installedGid) {
+                resolveManifestGid(steamApps, appId, depotId, depot, branch, branchPassword)
+            }
         } else {
             // UPDATE is resolved like INSTALL and handed to the engine, which skips it only when
             // the installed build's files still match the manifest's sizes (stat only). A gid
@@ -1099,6 +1100,17 @@ object GameDownloadService {
 internal fun pickManifestRequestCode(answers: List<Pair<Int, Long?>>): Long? {
     answers.firstOrNull { it.second != null && it.second != 0L }?.let { return it.second }
     return if (answers.isNotEmpty() && answers.all { it.second == 0L }) 0L else null
+}
+
+/**
+ * Манифест, по которому VERIFY проверяет депот: записанный установленный gid, а если записи нет
+ * (игру перенесли из другого лаунчера) — текущий gid ветки, как у UPDATE. [currentGid] ленивый:
+ * у депота с записью лишний запрос PICS не нужен. inline, чтобы лямбда могла быть suspend-вызовом
+ * из резолвера; вынесено, чтобы случаи были покрыты тестом без Steam-клиента.
+ */
+internal inline fun verifyManifestGid(installedGid: ULong?, currentGid: () -> Long): Long {
+    val installed = installedGid?.toLong()?.takeIf { it != 0L }
+    return installed ?: currentGid()
 }
 
 /** A code, the app that issued it (null when there is none), and how the lookup ended. */
