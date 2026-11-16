@@ -129,9 +129,6 @@ object GameDownloadService {
                 }
             }.awaitAll()
         }
-        // "Up to date" is an outcome, not a failure: an update whose depots all already match the
-        // current manifests must finish successfully (nothing was wrong, there was nothing to do).
-        val upToDate = resolutions.count { it is DepotResolution.UpToDate }
         val resolvedDepots = resolutions.filterIsInstance<DepotResolution.Resolved>()
             .map { it.depot }
         for (resolved in resolvedDepots) {
@@ -147,29 +144,9 @@ object GameDownloadService {
             resolvedDepotIds.add(resolved.depotId)
         }
         if (depotsJson.length() == 0) {
-            // Nothing to download AND at least one depot was confirmed current: the update has no
-            // work to do. The remaining selected depots are "unavailable" (key denied, no gid on
-            // this branch — a DLC the account does not own, say), which the resolver already logged
-            // and which were skipped-and-continued before this change too; failing the run here
-            // would turn a no-op update into an error.
-            if (upToDate > 0) {
-                val unavailable = selectedDepots.size - upToDate
-                Timber.tag(TAG).i(
-                    "Update: $upToDate depot(s) already at the current manifest" +
-                        (if (unavailable > 0) ", $unavailable unavailable (see the log)" else "") +
-                        " — nothing to do",
-                )
-                return SteamRunOutcome(
-                    depotsRun = 0,
-                    unavailableDepotIds = resolutions
-                        .filterIsInstance<DepotResolution.Unavailable>()
-                        .map { it.depotId },
-                )
-            }
-            // Every depot was skipped and none was confirmed current, so say WHY rather than
-            // guessing: a VERIFY whose depots have no recorded manifest is a user action ("run
-            // Update"), while a denied depot key is an entitlement problem that retrying or
-            // updating will not fix the same way.
+            // No depot resolved: say WHY rather than guessing. A VERIFY whose depots have no
+            // recorded manifest is a user action ("run Update"), while a denied depot key is an
+            // entitlement problem that retrying or updating will not fix the same way.
             val reasons = resolutions
                 .filterIsInstance<DepotResolution.Unavailable>()
                 .map { it.reason }
@@ -201,11 +178,10 @@ object GameDownloadService {
             .put("ca_bundle_path", "")
             // fresh = walk the depot even when the store already records the requested build, and
             // re-hash its existing chunks against the manifest (a chunk that matches is kept, a
-            // mismatch is re-fetched). UPDATE and VERIFY both want that and differ in WHAT they
-            // re-validate: UPDATE trusts the files its delta proves unchanged (no jobs, nothing
-            // hashed) and re-hashes the rest, while VERIFY re-hashes everything against the build the
-            // store records as installed (see SteamDownloadMode).
-            .put("fresh", mode != SteamDownloadMode.INSTALL)
+            // mismatch is re-fetched). Only VERIFY wants that. INSTALL and UPDATE let the engine
+            // skip an installed depot, but only after a stat-only check that every file still has
+            // the manifest's size — a recorded gid is not proof of what is on disk.
+            .put("fresh", mode == SteamDownloadMode.VERIFY)
             .put("untrusted_paths", JSONArray(patchedPaths))
             .put("max_workers", maxWorkers)
             .put("process_workers", processWorkers)
@@ -582,13 +558,12 @@ object GameDownloadService {
     )
 
     /**
-     * Why a depot did (or did not) make it into the run. `UpToDate` is a successful outcome —
-     * [SteamDownloadMode.UPDATE] skips a depot whose current manifest is already the installed one
-     * — and is counted separately so an all-up-to-date update is not reported as a failure.
+     * Why a depot did (or did not) make it into the run. "Nothing to do" is decided by the engine
+     * from the on-disk shape of the installed build, so every resolvable depot is handed over and
+     * only a depot whose key/gid could not be resolved is left out.
      */
     private sealed interface DepotResolution {
         class Resolved(val depot: ResolvedDepot) : DepotResolution
-        data object UpToDate : DepotResolution
         class Unavailable(val depotId: Int, val reason: String) : DepotResolution
     }
 
@@ -628,22 +603,10 @@ object GameDownloadService {
             }
             installed
         } else {
-            val current = resolveManifestGid(steamApps, appId, depotId, depot, branch, branchPassword)
-            // UPDATE: a depot whose current manifest IS the installed one has nothing to do. It is
-            // still selected (so its files stay checked when something else in it changed), but
-            // walking it would re-hash the whole depot against the very manifest it already
-            // matches — Valve's client calls this "up to date" and skips it.
-            if (mode == SteamDownloadMode.UPDATE &&
-                current != 0L &&
-                installedGids[depotId]?.toLong() == current
-            ) {
-                Timber.tag(TAG).i(
-                    "Update: depot $depotId already at manifest " +
-                        java.lang.Long.toUnsignedString(current) + " — up to date, skipped",
-                )
-                return DepotResolution.UpToDate
-            }
-            current
+            // UPDATE is resolved like INSTALL and handed to the engine, which skips it only when
+            // the installed build's files still match the manifest's sizes (stat only). A gid
+            // match alone cannot see the old build a foreign launcher left behind.
+            resolveManifestGid(steamApps, appId, depotId, depot, branch, branchPassword)
         }
         if (gid == 0L) {
             Timber.tag(TAG).w("Skipping depot $depotId: no manifest gid for branch $branch")
