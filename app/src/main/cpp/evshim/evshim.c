@@ -87,13 +87,27 @@ static int g_is_wine = 0;
 static void build_gamepad_dir(char *out, size_t size)
 {
     const char *base = getenv("EVSHIM_BASE_PATH");
-
-    // fallback
-    if (!base || !*base) {
-        base = "/data/data/app.gamenative/files";
+    if (base && *base) {
+        snprintf(out, size, "%s/gamepad_shm", base);
+        return;
     }
 
-    snprintf(out, size, "%s/gamepad_shm", base);
+    // Процесс приложения переменную не получает: каталог берётся по имени своего пакета из cmdline
+    // Зашитый пакет ломал контроллер в сборке с другим ID — Wine ждал память, которую приложение не открыло
+    char pkg[256] = {0};
+    int fd = open("/proc/self/cmdline", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = read(fd, pkg, sizeof(pkg) - 1);
+        close(fd);
+        if (n < 0) pkg[0] = '\0';
+        char *colon = strchr(pkg, ':'); // отдельный процесс приложения: «пакет:имя»
+        if (colon) *colon = '\0';
+    }
+    if (!pkg[0]) {
+        snprintf(pkg, sizeof(pkg), "app.gamenative");
+    }
+
+    snprintf(out, size, "/data/data/%s/files/gamepad_shm", pkg);
 }
 
 static int mkdir_gameshm(const char *path)
