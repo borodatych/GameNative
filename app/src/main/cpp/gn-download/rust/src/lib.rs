@@ -11,6 +11,7 @@
 //!
 //! Login / CM traffic stays in JavaSteam on the Kotlin side; this crate only moves bytes.
 
+pub(crate) mod dns_resolve;
 pub mod fetch_core;
 pub mod queue_delay;
 pub mod jni_tree_delete;

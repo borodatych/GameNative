@@ -405,6 +405,9 @@ impl CdnClient {
     fn http_client(&self) -> Result<reqwest::blocking::Client, String> {
         let mut builder = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
+            // Тот же резолвер с дедлайном: drop внутреннего рантайма blocking-клиента ждёт свои
+            // задачи, и зависший getaddrinfo подвесил бы вызывающего.
+            .dns_resolver(std::sync::Arc::new(crate::dns_resolve::TimedResolver::new()))
             .connect_timeout(CdnClient::connect_timeout());
         if !self.ca_bundle_path.is_empty() {
             let pem =
@@ -585,6 +588,9 @@ impl AsyncCdnClient {
     pub fn new(ca_bundle_path: &str, pool_max_idle_per_host: usize) -> Result<Self, String> {
         let mut builder = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            // Резолвер с дедлайном и кэшем на прогон: штатный getaddrinfo на Android может
+            // висеть вечно и уносит по потоку blocking-пула на каждый зависший резолв.
+            .dns_resolver(std::sync::Arc::new(crate::dns_resolve::TimedResolver::new()))
             .connect_timeout(CdnClient::connect_timeout())
             .pool_max_idle_per_host(pool_max_idle_per_host.max(1))
             .pool_idle_timeout(Duration::from_secs(90));

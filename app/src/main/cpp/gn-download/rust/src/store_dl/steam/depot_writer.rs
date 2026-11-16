@@ -98,6 +98,18 @@ const STALL_LOG_EVERY: Duration = Duration::from_secs(15);
 const STALL_ABORT_AFTER: Duration = Duration::from_secs(120);
 /// A write-stall dump is one logcat line; cap listed files so a huge depot can't spam it.
 const STALL_DUMP_MAX_FILES: usize = 8;
+/// Тик сторожа драйвера: даже если ни один запрос не завершился, драйвер просыпается — иначе
+/// зависший сокет/резолв усыпит прогон навсегда (и отмену тоже не увидит).
+const DEPOT_STALL_TICK: Duration = Duration::from_secs(5);
+/// Столько без роста прогресса при незавершённых чанках — это стопор: зависшие запросы
+/// обрываются и переезжают на другие сервера.
+const DEPOT_STALL_AFTER: Duration = Duration::from_secs(60);
+/// Сколько подряд стопоров (прогресс между ними сбрасывает счёт) терпим до ошибки депота,
+/// которую Kotlin покажет пользователю, вместо вечных «46%».
+const DEPOT_STALL_LIMIT: u32 = 3;
+/// Предел на teardown tokio-рантайма: зависшая задача blocking-пула не должна держать
+/// отмену/удаление прогона.
+const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Slack below which the free-space guard will not fail (guards against small statvfs imprecision).
 const FREE_SPACE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
@@ -1596,6 +1608,83 @@ struct FetchDone {
     res: Result<Vec<u8>, AsyncFetchError>,
 }
 
+/// Условие выхода драйвера. Проверяется на каждом витке и после каждого тика, поэтому пауза и
+/// удаление останавливают прогон даже когда все запросы зависли.
+fn driver_should_stop(cancel: Option<&AtomicBool>, error_slot: &Mutex<Option<String>>) -> bool {
+    cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+        || error_slot.lock().expect("err slot poisoned").is_some()
+}
+
+/// Ждёт одно завершение не дольше `tick`. `None` — тик истёк: драйвер перепроверит отмену и
+/// ошибку и прогонит сторож, хотя ничего не завершилось.
+async fn wait_completion<F: std::future::Future>(next: F, tick: Duration) -> Option<F::Output> {
+    tokio::time::timeout(tick, next).await.ok()
+}
+
+/// Один запрос в полёте: нужен, чтобы стопор оборвал его и вернул чанк в очередь.
+struct InflightChunk {
+    job: ChunkWriteJob,
+    attempts: u32,
+    server_idx: usize,
+    reserve: u64,
+}
+
+/// Ключ чанка (file_idx и chunk_idx оба влезают в 32 бита).
+fn chunk_key(job: ChunkWriteJob) -> u64 {
+    ((job.file_idx as u64) << 32) | job.chunk_idx as u64
+}
+
+/// Что драйверу делать со стопором.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StallAction {
+    /// Оборвать зависшие запросы и переотправить их чанки на другие сервера.
+    Restart,
+    /// Слишком много стопоров подряд — завалить депот, чтобы Kotlin показал сбой.
+    Abort,
+}
+
+/// Сторож прогресса драйвера. Прогресс — это `total` депота (записано + загружено), то же
+/// число, что видит пользователь: если оно замерло при запросах в полёте, это стопор, даже
+/// если какой-то хост держит сокет полуживым. Время передаётся снаружи — так поведение
+/// проверяется тестом без сна и без остановки рантайма.
+pub(crate) struct StallWatch {
+    last_progress: Instant,
+    last_value: u64,
+    restarts: u32,
+}
+
+impl StallWatch {
+    fn new(now: Instant, value: u64) -> Self {
+        Self {
+            last_progress: now,
+            last_value: value,
+            restarts: 0,
+        }
+    }
+
+    /// Вызывается раз в тик. `None` — делать нечего; стопор срабатывает не чаще раза в
+    /// [`DEPOT_STALL_AFTER`], поэтому обречённый прогон проходит [`DEPOT_STALL_LIMIT`] перезапусков,
+    /// а не перезапускается на каждом тике.
+    fn observe(&mut self, now: Instant, value: u64) -> Option<StallAction> {
+        if value != self.last_value {
+            self.last_value = value;
+            self.last_progress = now;
+            self.restarts = 0;
+            return None;
+        }
+        if now.duration_since(self.last_progress) < DEPOT_STALL_AFTER {
+            return None;
+        }
+        self.last_progress = now;
+        self.restarts = self.restarts.saturating_add(1);
+        if self.restarts >= DEPOT_STALL_LIMIT {
+            Some(StallAction::Abort)
+        } else {
+            Some(StallAction::Restart)
+        }
+    }
+}
+
 /// Bytes to reserve against the in-flight budget for a chunk BEFORE it is fetched (compressed size
 /// from the manifest, or a nominal fallback). Reserving at dispatch — not at enqueue — makes the byte
 /// budget bound the TOTAL raw bytes in memory (being fetched + queued), the hard memory cap.
@@ -2959,6 +3048,9 @@ host_ceiling={} budget={}MiB reason=start",
                     win_max,
                     depot_id,
                 ));
+                // Drop рантайма ждёт задачи blocking-пула: зависшая в платформе задача (резолв,
+                // CM-запрос) иначе не даст прогону завершиться, а паузе/удалению — сработать.
+                rt.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
             }
             Err(err) => {
                 record_first_error(error_slot, format!("write_depot: tokio runtime: {err}"));
@@ -3084,11 +3176,16 @@ async fn run_async_fetch_driver(
     };
     let mut dispatch_ages: VecDeque<Instant> = VecDeque::new();
     let mut hints_generation = 0u64;
+    // Состояние сторожа и запросы в полёте: стопор обрывает их futures и возвращает чанки в
+    // очередь, поэтому здесь же лежат точные резервации бюджета.
+    let mut inflight_jobs: HashMap<u64, InflightChunk> = HashMap::new();
+    let mut stall_watch = StallWatch::new(
+        Instant::now(),
+        bytes_written.load(Ordering::Relaxed) + fetched_pending.load(Ordering::Relaxed),
+    );
 
     loop {
-        if cancel.is_some_and(|c| c.load(Ordering::Relaxed))
-            || error_slot.lock().expect("err slot poisoned").is_some()
-        {
+        if driver_should_stop(cancel, error_slot) {
             break;
         }
         // CDN probe hints: apply the published server ranking exactly once per update
@@ -3321,6 +3418,15 @@ async fn run_async_fetch_driver(
                 }
             }
             in_flight.fetch_add(reserve, Ordering::Relaxed);
+            inflight_jobs.insert(
+                chunk_key(job),
+                InflightChunk {
+                    job,
+                    attempts,
+                    server_idx,
+                    reserve,
+                },
+            );
             verify_since_yield = 0;
             let async_client = &async_client;
             let started = Instant::now();
@@ -3390,10 +3496,60 @@ async fn run_async_fetch_driver(
             continue;
         }
 
-        // ── Await one completion (drives ALL in-flight requests cooperatively). ──
-        let Some(done) = inflight.next().await else {
-            continue;
+        // ── Ждём одно завершение (это и двигает все запросы в полёте). Ожидание ограничено:
+        // зависший сокет или getaddrinfo в netd сам не вернётся, поэтому цикл обязан
+        // просыпаться — проверить отмену/ошибку и прогнать сторож. ──
+        let done = match wait_completion(inflight.next(), DEPOT_STALL_TICK).await {
+            Some(Some(done)) => done,
+            Some(None) => continue,
+            None => {
+                // Тик: судим по TOTAL депота — числу, которое видит пользователь.
+                let now = Instant::now();
+                let total_now =
+                    bytes_written.load(Ordering::Relaxed) + fetched_pending.load(Ordering::Relaxed);
+                let inflight_now = inflight.len();
+                let idle = now.duration_since(stall_watch.last_progress).as_secs();
+                match stall_watch.observe(now, total_now) {
+                    None => continue,
+                    Some(StallAction::Abort) => {
+                        record_first_error(
+                            error_slot,
+                            format!(
+                                "depot-stall depot={depot_id} idle={idle}s inflight={inflight_now} \
+— no progress after {DEPOT_STALL_LIMIT} restarts, aborting depot"
+                            ),
+                        );
+                        break;
+                    }
+                    Some(StallAction::Restart) => {
+                        if let Some(log) = log {
+                            log(&format!(
+                                "depot-stall depot={depot_id} idle={idle}s inflight={inflight_now} \
+restart={}/{} — aborting wedged requests and re-dispatching",
+                                stall_watch.restarts,
+                                DEPOT_STALL_LIMIT,
+                            ));
+                        }
+                        // Drop futures обрывает запросы; их чанки возвращаются в retry, а
+                        // сервера, что их держали, остывают — повтор уйдёт на другой хост.
+                        let stalled = std::mem::take(&mut inflight);
+                        drop(stalled);
+                        dispatch_ages.clear();
+                        for (_, held) in inflight_jobs.drain() {
+                            in_flight.fetch_sub(held.reserve, Ordering::Relaxed);
+                            sched.on_error(held.server_idx, now, FetchFailKind::Timeout);
+                            retry.push_back(PendingChunk {
+                                job: held.job,
+                                attempts: held.attempts.saturating_add(1),
+                                not_before: now,
+                            });
+                        }
+                        continue;
+                    }
+                }
+            }
         };
+        inflight_jobs.remove(&chunk_key(done.job));
         dispatch_ages.pop_front();
         let now = Instant::now();
         match done.res {
@@ -5565,6 +5721,89 @@ rename, a missing hash and a new file all fall through to the normal walk"
             42,
         );
         assert!(msg.contains("timeout"), "{msg}");
+    }
+
+    #[test]
+    fn depot_stall_watch_restarts_then_aborts_without_progress() {
+        let t0 = Instant::now();
+        let mut watch = StallWatch::new(t0, 1_000);
+        // Растущий total — прогресс: даже долгий прогон не стопорится.
+        for i in 1..=10u64 {
+            assert_eq!(
+                watch.observe(t0 + DEPOT_STALL_AFTER * (i as u32), 1_000 + i),
+                None
+            );
+        }
+        // Замёрзший total: перезапуск раз в DEPOT_STALL_AFTER, третий подряд — ошибка.
+        let frozen_at = t0 + DEPOT_STALL_AFTER * 20;
+        assert_eq!(
+            watch.observe(frozen_at, 1_010),
+            Some(StallAction::Restart)
+        );
+        assert_eq!(
+            watch.observe(frozen_at + DEPOT_STALL_AFTER, 1_010),
+            Some(StallAction::Restart)
+        );
+        assert_eq!(
+            watch.observe(frozen_at + DEPOT_STALL_AFTER * 2, 1_010),
+            Some(StallAction::Abort)
+        );
+        // До дедлайна стопор не срабатывает.
+        let mut fresh = StallWatch::new(t0, 5_000);
+        assert_eq!(
+            fresh.observe(t0 + DEPOT_STALL_AFTER - Duration::from_secs(1), 5_000),
+            None
+        );
+        assert_eq!(
+            fresh.observe(t0 + DEPOT_STALL_AFTER, 5_000),
+            Some(StallAction::Restart)
+        );
+    }
+
+    #[test]
+    fn depot_stall_progress_resets_the_consecutive_count() {
+        let t0 = Instant::now();
+        let mut watch = StallWatch::new(t0, 0);
+        assert_eq!(
+            watch.observe(t0 + DEPOT_STALL_AFTER, 0),
+            Some(StallAction::Restart)
+        );
+        let resumed = t0 + DEPOT_STALL_AFTER + Duration::from_secs(1);
+        assert_eq!(watch.observe(resumed, 1), None);
+        // Два стопора после прогресса ещё не доходят до лимита.
+        assert_eq!(
+            watch.observe(resumed + DEPOT_STALL_AFTER, 1),
+            Some(StallAction::Restart)
+        );
+        assert_eq!(
+            watch.observe(resumed + DEPOT_STALL_AFTER * 2, 1),
+            Some(StallAction::Restart)
+        );
+    }
+
+    #[test]
+    fn driver_ticks_and_stops_on_cancel_even_with_no_completion() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            // Завершений нет вовсе, но ограниченное ожидание обязано вернуться по тику,
+            // чтобы драйвер перепроверил отмену и сторож.
+            let tick = tokio::time::timeout(Duration::from_secs(1), async {
+                wait_completion(std::future::pending::<()>(), Duration::from_millis(20)).await
+            })
+            .await
+            .expect("the driver tick must not wait out the request");
+            assert!(tick.is_none());
+        });
+        let cancel = AtomicBool::new(true);
+        let errors: Mutex<Option<String>> = Mutex::new(None);
+        assert!(driver_should_stop(Some(&cancel), &errors));
+        let cancel = AtomicBool::new(false);
+        assert!(!driver_should_stop(Some(&cancel), &errors));
+        *errors.lock().expect("err slot") = Some("boom".to_string());
+        assert!(driver_should_stop(Some(&cancel), &errors));
     }
 
     #[test]
