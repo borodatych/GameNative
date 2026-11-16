@@ -5,6 +5,7 @@ import app.gamenative.enums.Marker
 import com.winlator.container.Container
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import timber.log.Timber
 
 object UbisoftConnectStep : PreInstallStep {
@@ -59,7 +60,7 @@ object UbisoftConnectStep : PreInstallStep {
     /**
      * IMPORTANT: Ubisoft Connect installer cannot be run from the game root directory.
      * Ensures the Ubisoft Connect installer is present at the expected _CommonRedist path.
-     * If it's only present in the game root, creates a symlink there first.
+     * If it's only present in the game root, links it there, or copies it where links are unsupported.
      */
     private fun ensureInstallerAtCommonRedist(
         rootInstaller: File,
@@ -69,13 +70,24 @@ object UbisoftConnectStep : PreInstallStep {
         if (commonRedistInstaller.isFile) return true
         if (!rootInstaller.isFile) return false
 
+        commonRedistDir.mkdirs()
         try {
-            commonRedistDir.mkdirs()
             Files.createSymbolicLink(commonRedistInstaller.toPath(), rootInstaller.toPath())
-            return commonRedistInstaller.exists()
+            if (commonRedistInstaller.exists()) return true
         } catch (t: Throwable) {
-            Timber.tag(TAG).w(t, "Failed creating Ubisoft symlink")
-            return false
+            // Общая память Android (/storage/emulated) символьных ссылок не умеет — там установщик копируется
+            Timber.tag(TAG).i("Symlink unsupported here (%s), copying Ubisoft installer", t.message)
+        }
+        // Копия идёт во временный файл и переименовывается целой: прерванная копия не сойдёт за готовый установщик
+        val partial = File(commonRedistDir, commonRedistInstaller.name + ".part")
+        return try {
+            Files.copy(rootInstaller.toPath(), partial.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Files.move(partial.toPath(), commonRedistInstaller.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            commonRedistInstaller.isFile
+        } catch (t: Throwable) {
+            Timber.tag(TAG).w(t, "Failed copying Ubisoft installer")
+            partial.delete()
+            false
         }
     }
 }
