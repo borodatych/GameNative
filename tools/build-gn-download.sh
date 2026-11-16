@@ -14,7 +14,11 @@ RUST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../app/src/main/cpp/gn-download/r
 # override srcDirs) — installing anywhere else (e.g. src/jniLibs) silently ships a stale .so.
 JNILIBS="$(cd "$RUST_DIR/../../.." && pwd)/jniLibs"
 NDK="${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/27.3.13750724}"
-HOST_TAG="linux-x86_64" # darwin-x86_64 on macOS
+# NDK ships its prebuilt clang per host OS; darwin-x86_64 also runs on Apple Silicon
+case "$(uname -s)" in
+    Darwin) HOST_TAG="darwin-x86_64" ;;
+    *) HOST_TAG="linux-x86_64" ;;
+esac
 
 export PATH="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin:$PATH"
 export CC_aarch64_linux_android=aarch64-linux-android26-clang
@@ -29,7 +33,7 @@ build_abi() {
     echo "==> cargo build --release --target $target"
     cargo build --release --target "$target"
     mkdir -p "$JNILIBS/$abi"
-    cp "target/$target/release/libgndownload.so" "$JNILIBS/$abi/libgndownload.so"
+    cp "${CARGO_TARGET_DIR:-target}/$target/release/libgndownload.so" "$JNILIBS/$abi/libgndownload.so"
     echo "    installed $JNILIBS/$abi/libgndownload.so"
 }
 
