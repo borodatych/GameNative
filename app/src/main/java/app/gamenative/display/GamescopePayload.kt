@@ -15,6 +15,13 @@ object GamescopePayload {
     const val ARCHIVE = "gamescope-gamenative-$VERSION.tzst"
     private const val STAMP = ".payload.version"
 
+    // Наши пересобранные файлы поверх payload'а: каталог в assets и версия payload'а, под которую они собраны
+    private const val OVERLAY_ASSET_DIR = "gamescope-overlay"
+    private const val OVERLAY_VERSION_FILE = "PAYLOAD_VERSION"
+
+    // Растёт при каждой смене файлов overlay: метка меняется, и установленный payload переустанавливается
+    private const val OVERLAY_REVISION = 1
+
     // Upstream-пакет, под который собран payload: его абсолютные пути зашиты в ELF.
     private const val UPSTREAM_PKG = "app.gamenative"
     private const val UPSTREAM_USER_PREFIX = "/data/user/0/$UPSTREAM_PKG/"
@@ -29,7 +36,7 @@ object GamescopePayload {
      * applicationId (и любая установка до появления правки) не готова, и `isReady` обязан
      * вернуть false, чтобы payload переустановился и пути в файлах переписались.
      */
-    internal fun stamp(packageName: String): String = "$VERSION+pkg:$packageName"
+    internal fun stamp(packageName: String): String = "$VERSION+pkg:$packageName+overlay:$OVERLAY_REVISION"
 
     fun isReady(filesDir: File, packageName: String): Boolean {
         val dir = directory(filesDir)
@@ -58,7 +65,38 @@ object GamescopePayload {
                 }
             }
         }
-        install(archive, filesDir, context.packageName)
+        install(archive, filesDir, context.packageName) { dir -> applyAssetOverlay(context, dir) }
+    }
+
+    /**
+     * Кладёт поверх распакованного payload'а наши пересобранные файлы из assets
+     *
+     * Overlay собран под конкретную версию payload'а (tools/build-gamescope-overlay.sh):
+     * Под другую версию он не ставится — чужой шим с иной версией протокола хуже исходного
+     */
+    private fun applyAssetOverlay(context: Context, dir: File) {
+        val assets = context.assets
+        val builtFor = runCatching {
+            assets.open("$OVERLAY_ASSET_DIR/$OVERLAY_VERSION_FILE").bufferedReader().use { it.readText().trim() }
+        }.getOrNull()
+        if (builtFor == null) return
+        if (builtFor != VERSION) {
+            Timber.w("Gamescope overlay is built for payload $builtFor, not $VERSION; skipped")
+            return
+        }
+        fun copy(assetPath: String, target: File) {
+            val children = assets.list(assetPath).orEmpty()
+            if (children.isEmpty()) {
+                target.parentFile?.mkdirs()
+                assets.open(assetPath).use { input -> target.outputStream().use { input.copyTo(it) } }
+                return
+            }
+            children.forEach { copy("$assetPath/$it", File(target, it)) }
+        }
+        assets.list(OVERLAY_ASSET_DIR).orEmpty()
+            .filter { it != OVERLAY_VERSION_FILE }
+            .forEach { copy("$OVERLAY_ASSET_DIR/$it", File(dir, it)) }
+        Timber.i("Gamescope overlay revision $OVERLAY_REVISION applied over payload $VERSION")
     }
 
     /** Whether this APK carries the payload, and if so, copy it out to [dest]. */
@@ -77,7 +115,12 @@ object GamescopePayload {
     }
 
     @Synchronized
-    internal fun install(archive: File, filesDir: File, packageName: String): File {
+    internal fun install(
+        archive: File,
+        filesDir: File,
+        packageName: String,
+        overlay: (File) -> Unit = {},
+    ): File {
         val target = directory(filesDir)
         if (isReady(filesDir, packageName)) return target
         val tempDir = File(target.parentFile, "${target.name}.tmp")
@@ -88,6 +131,8 @@ object GamescopePayload {
             archive.delete()
             error("Failed to extract $ARCHIVE")
         }
+        // Overlay идёт до правки путей: в наших файлах тоже могут быть пути upstream-пакета
+        overlay(tempDir)
         // Пути в бинарниках указывают на upstream-пакет, поэтому до записи метки
         // их надо переписать под наш applicationId.
         patchNativePaths(tempDir, packageName)

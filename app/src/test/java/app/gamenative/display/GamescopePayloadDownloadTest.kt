@@ -77,9 +77,14 @@ class GamescopePayloadDownloadTest {
         assertTrue("the download reported no progress", progress.isNotEmpty())
         assertTrue("the download never completed", progress.max() > 0.99f)
 
-        val installed = GamescopePayload.install(archive, context.filesDir, context.packageName)
+        // Overlay заменяет файл payload'а до записи метки: установленный каталог несёт нашу копию
+        val overlaid = "lib/libadrenotools_gamescope.so"
+        val installed = GamescopePayload.install(archive, context.filesDir, context.packageName) { dir ->
+            File(dir, overlaid).writeText("overlay")
+        }
 
         assertEquals(GamescopeSettings.gamescopeDir(context.filesDir), installed)
+        assertEquals("overlay", File(installed, overlaid).readText())
         assertTrue(
             "the payload carries no bin/gamescope",
             File(installed, "bin/gamescope").isFile,

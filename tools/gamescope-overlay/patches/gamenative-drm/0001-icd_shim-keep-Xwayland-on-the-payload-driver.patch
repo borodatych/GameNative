@@ -1,0 +1,28 @@
+From b3ebec125ad00c1979cd7ac41129f801636697e5 Mon Sep 17 00:00:00 2001
+From: borodatych <i@borodatych.ru>
+Date: Tue, 17 Nov 2026 01:10:58 +0300
+Subject: [PATCH] icd_shim: keep Xwayland on the payload driver
+
+---
+ icd_shim/src/lib.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/icd_shim/src/lib.rs b/icd_shim/src/lib.rs
+index a75ce3f..8cb7595 100644
+--- a/icd_shim/src/lib.rs
++++ b/icd_shim/src/lib.rs
+@@ -604,7 +604,10 @@ fn init_once() {
+         try_system_driver();
+     }
+     if kgsl && unsafe { DRIVER.handle }.is_null() {
+-        if std::env::var_os("GN_VKSHIM_NO_ADRENOTOOLS").is_none() {
++        // Xwayland's glamor (zink) stays on the payload driver: a container's
++        // adrenotools Turnip leaks a dma-buf fd per imported client buffer there,
++        // and a CEF client exhausts device memory within minutes.
++        if std::env::var_os("GN_VKSHIM_NO_ADRENOTOOLS").is_none() && !is_xwayland_binary() {
+             try_adrenotools();
+         }
+         // A wrapper container with no adrenotools driver is on the system
+-- 
+2.54.0 (Apple Git-157)
+
