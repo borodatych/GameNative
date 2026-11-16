@@ -2,7 +2,8 @@ use crate::store_dl::steam::cdn_client::{auth_status, CdnClient, CdnManifestResu
 use crate::store_dl::steam::content_manifest::ContentManifest;
 use crate::store_dl::steam::depot_config::DepotConfigStore;
 use crate::store_dl::steam::depot_writer::{
-    write_depot_sequential, CdnAuthTokenRefresher, DepotWriteOptions, DEPOT_FILE_FLAG_DIRECTORY,
+    manifest_shape_mismatches, write_depot_sequential, CdnAuthTokenRefresher, DepotWriteOptions,
+    DEPOT_FILE_FLAG_DIRECTORY,
 };
 use crate::store_dl::steam::pb::ccontentserverdirectory::CContentServerDirectoryServerInfo;
 use std::fs;
@@ -326,10 +327,11 @@ pub fn fetch_manifest_with_retry(
 
 /// Whether a depot still needs work, or is already at the requested build.
 ///
-/// INSTALL asks for the build the app records as installed, so `completed/` already holding that gid
-/// means there is nothing to do; UPDATE and VERIFY pass `fresh` and always walk, because the engine
-/// cannot tell "unchanged" from "same gid, different content" without the manifest diff and the
-/// per-chunk re-hash that follow.
+/// INSTALL and UPDATE ask for the build the app records as installed, so `completed/` already
+/// holding that gid means there is nothing to do — provided every file still has the manifest's
+/// size on disk (`disk_matches`). A gid alone cannot see a tree another launcher left behind, so a
+/// depot whose files are missing or of the wrong length is downloaded and revalidated. VERIFY
+/// passes `fresh` and always walks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DepotResumeDecision {
     SkipInstalled,
@@ -340,12 +342,53 @@ pub fn decide_depot_resume(
     fresh: bool,
     cfg: &DepotConfigStore,
     spec: DepotSpec,
+    disk_matches: bool,
 ) -> DepotResumeDecision {
-    if !fresh && cfg.is_installed(spec.depot_id, spec.manifest_id) {
+    if !fresh && disk_matches && cfg.is_installed(spec.depot_id, spec.manifest_id) {
         DepotResumeDecision::SkipInstalled
     } else {
         DepotResumeDecision::Download
     }
+}
+
+/// stat-only shape check of the installed build: every regular file of the `completed/` manifest
+/// must be present at exactly its manifest size. A missing/unreadable manifest also answers
+/// `false`, so the depot is walked instead of being called up to date on a guess.
+fn installed_depot_shape_matches(
+    install_dir: &str,
+    cfg: &DepotConfigStore,
+    spec: DepotSpec,
+    depot_key: &[u8],
+    log: Option<crate::store_dl::steam::depot_writer::DepotLogCallback<'_>>,
+) -> bool {
+    let Some(manifest) = load_cached_manifest(cfg, spec.depot_id, spec.manifest_id, depot_key)
+    else {
+        return false;
+    };
+    let mismatches = manifest_shape_mismatches(&manifest, install_dir);
+    if mismatches.is_empty() {
+        return true;
+    }
+    if let Some(log) = log {
+        log(&format!(
+            "depot-resume depot={} walk: {} file(s) differ from the installed manifest",
+            spec.depot_id,
+            mismatches.len()
+        ));
+        for mismatch in mismatches.iter().take(10) {
+            log(&format!(
+                "depot-shape depot={} file={} disk={} manifest={}",
+                spec.depot_id,
+                mismatch.path,
+                mismatch
+                    .disk
+                    .map(|len| len.to_string())
+                    .unwrap_or_else(|| "missing".to_string()),
+                mismatch.manifest
+            ));
+        }
+    }
+    false
 }
 
 pub fn map_write_progress(
@@ -486,7 +529,17 @@ pub fn download_resolved_depots_with_cancel_progress(
             depot_id: depot.depot_id,
             manifest_id: depot.manifest_id,
         };
-        if decide_depot_resume(fresh, &cfg, spec) == DepotResumeDecision::SkipInstalled
+        let disk_matches = !fresh
+            && cfg.is_installed(spec.depot_id, spec.manifest_id)
+            && installed_depot_shape_matches(
+                install_dir,
+                &cfg,
+                spec,
+                &depot.depot_key,
+                log,
+            );
+        if decide_depot_resume(fresh, &cfg, spec, disk_matches)
+            == DepotResumeDecision::SkipInstalled
         {
             result.depots_skipped += 1;
             depots_done += 1;
@@ -1268,20 +1321,26 @@ mod tests {
             depot_id: 100,
             manifest_id,
         };
-        // INSTALL asks for the build `completed/` records: there is nothing left to do.
+        // INSTALL/UPDATE ask for the build `completed/` records and the files still have the
+        // manifest's shape: there is nothing left to do.
         assert_eq!(
-            decide_depot_resume(false, &cfg, spec(555)),
+            decide_depot_resume(false, &cfg, spec(555), true),
             DepotResumeDecision::SkipInstalled
         );
-        // UPDATE and VERIFY send `fresh`, so the same gid is still walked — the manifest diff and the
-        // per-chunk re-hash decide what is really left.
+        // The same gid with any file missing or of the wrong size is NOT up to date: a foreign
+        // launcher may have left the old build under the current manifest's name.
         assert_eq!(
-            decide_depot_resume(true, &cfg, spec(555)),
+            decide_depot_resume(false, &cfg, spec(555), false),
+            DepotResumeDecision::Download
+        );
+        // VERIFY sends `fresh`, so the same gid is still walked — the per-chunk re-hash decides.
+        assert_eq!(
+            decide_depot_resume(true, &cfg, spec(555), true),
             DepotResumeDecision::Download
         );
         // A different build always has work to do.
         assert_eq!(
-            decide_depot_resume(false, &cfg, spec(777)),
+            decide_depot_resume(false, &cfg, spec(777), true),
             DepotResumeDecision::Download
         );
         let _ = fs::remove_dir_all(&dir);

@@ -211,6 +211,15 @@ pub struct DepotWriteResult {
     pub error: String,
 }
 
+/// One regular manifest file whose on-disk shape is wrong. `disk = None` means the path is absent
+/// (or is not a regular file); otherwise it is the actual length.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShapeMismatch {
+    pub path: String,
+    pub disk: Option<u64>,
+    pub manifest: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DepotFileAction {
     Directory { path: String },
@@ -1653,7 +1662,7 @@ struct FileSlot {
     blocking_dir: bool,
     /// The path is the regular file of this manifest's size, so "unchanged" can be believed. A
     /// deleted file, a directory in its place or a different length is not that file: those keep
-    /// their chunk jobs and are revalidated (see `mark_trusted`).
+    /// their chunk jobs and are revalidated (see `mark_trusted` and `chunk_is_trusted`).
     shape_ok: bool,
 }
 
@@ -1710,7 +1719,12 @@ impl DepotFiles {
     /// `plan` supplies every file's already-resolved (case-corrected) absolute path from
     /// [`plan_depot_write`] — resolving again here walked the tree a second time per file, all of
     /// it before the driver loop could report the first verify status (see [`CaseResolver`]).
-    fn prepare(manifest: &ContentManifest, plan: &DepotWritePlan, target_dir: &str) -> Self {
+    fn prepare(
+        manifest: &ContentManifest,
+        plan: &DepotWritePlan,
+        target_dir: &str,
+        log: Option<DepotLogCallback<'_>>,
+    ) -> Self {
         let mut slots = Vec::with_capacity(manifest.files.len());
         let mut already_present = 0u64;
         for (file_idx, file) in manifest.files.iter().enumerate() {
@@ -1733,7 +1747,21 @@ impl DepotFiles {
             let (preexisting, blocking_dir, shape_ok) = if is_regular {
                 match fs::metadata(&path) {
                     Ok(meta) if meta.is_dir() => (0, true, false),
-                    Ok(meta) => (meta.len(), false, meta.is_file() && meta.len() == file.size),
+                    Ok(meta) => {
+                        let len = meta.len();
+                        let is_file = meta.is_file();
+                        // Only an existing file of the wrong length is surprising; a missing file
+                        // is the normal fresh-install case and would flood the log.
+                        if is_file && len != file.size {
+                            if let Some(log) = log {
+                                log(&format!(
+                                    "depot-shape depot={} file={} disk={} manifest={}",
+                                    manifest.metadata.depot_id, file.filename, len, file.size
+                                ));
+                            }
+                        }
+                        (len, false, is_file && len == file.size)
+                    }
                     Err(_) => (0, false, false),
                 }
             } else {
@@ -1883,8 +1911,10 @@ impl DepotFiles {
         }
     }
 
-    /// True when the update delta proved this chunk unchanged and the file was at least that long
-    /// before this run started, so its bytes are on disk without re-hashing them.
+    /// True when the update delta proved this chunk unchanged and the file on disk is the regular
+    /// file of the manifest's size, so its bytes are already right. A file of ANY other length is
+    /// not trusted chunk-by-chunk either: a stale build can cover the offsets while its content
+    /// and tail differ, and only the manifest's own size proves the shape this run must leave.
     fn chunk_is_trusted(&self, file_idx: usize, chunk_idx: usize, chunk: &ChunkData) -> bool {
         if chunk.cb_original == 0
             || !self.trusted_chunks.contains(&(file_idx as u32, chunk_idx as u32))
@@ -1892,9 +1922,9 @@ impl DepotFiles {
             return false;
         }
         let end = chunk.offset.saturating_add(chunk.cb_original as u64);
-        self.slots
-            .get(file_idx)
-            .is_some_and(|slot| slot.is_regular && slot.preexisting_len >= end)
+        self.slots.get(file_idx).is_some_and(|slot| {
+            slot.is_regular && slot.shape_ok && slot.preexisting_len >= end
+        })
     }
 
     fn all_chunks_trusted(&self, file_idx: usize) -> bool {
@@ -1998,6 +2028,51 @@ impl DepotFiles {
         }
         Ok(())
     }
+
+    /// stat-only (no hashing) check of what this run leaves on disk. A depot only counts as
+    /// written when every regular file is present at exactly the manifest's size.
+    fn shape_mismatches(&self) -> Vec<(String, Option<u64>, u64)> {
+        self.slots
+            .iter()
+            .filter(|slot| slot.is_regular)
+            .filter_map(|slot| match fs::metadata(&slot.path) {
+                Ok(meta) if meta.is_file() && meta.len() == slot.size => None,
+                Ok(meta) => Some((slot.path.clone(), Some(meta.len()), slot.size)),
+                Err(_) => Some((slot.path.clone(), None, slot.size)),
+            })
+            .collect()
+    }
+}
+
+/// Cheap stat-only check used before skipping an installed depot: every regular file must exist
+/// at exactly the manifest's size. Content is deliberately not hashed — Steam's own "up to date"
+/// decision is gid-based, and this adds only the shape guard that the recorded gid cannot give.
+pub fn manifest_shape_mismatches(manifest: &ContentManifest, target_dir: &str) -> Vec<ShapeMismatch> {
+    let mut mismatches = Vec::new();
+    // One resolver for the whole manifest: directory listings are cached, so this stays a stat
+    // per component instead of a read_dir per new file.
+    let mut resolver = crate::store_dl::CaseResolver::new();
+    for file in &manifest.files {
+        if !file.linktarget.is_empty() || (file.flags & DEPOT_FILE_FLAG_DIRECTORY) != 0 {
+            continue;
+        }
+        let rel = resolver.resolve(target_dir, &file.filename);
+        let path = join_target_path(target_dir, &rel);
+        match fs::metadata(&path) {
+            Ok(meta) if meta.is_file() && meta.len() == file.size => {}
+            Ok(meta) => mismatches.push(ShapeMismatch {
+                path,
+                disk: Some(meta.len()),
+                manifest: file.size,
+            }),
+            Err(_) => mismatches.push(ShapeMismatch {
+                path,
+                disk: None,
+                manifest: file.size,
+            }),
+        }
+    }
+    mismatches
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -2278,7 +2353,7 @@ pub fn write_depot_sequential(
         Err(error) => return error,
     };
 
-    let mut files = DepotFiles::prepare(manifest, &plan, target_dir);
+    let mut files = DepotFiles::prepare(manifest, &plan, target_dir, options.log);
     if let Some(trusted_chunks) = options.trusted_chunks {
         if !trusted_chunks.is_empty() {
             files.mark_trusted_chunks(manifest, trusted_chunks);
@@ -2356,6 +2431,35 @@ pub fn write_depot_sequential(
 
     if let Some(log) = options.log {
         log(&meter.summary_line(depot_id));
+    }
+    // The finalize pass sets every touched file to the manifest's size, so a residual mismatch
+    // means a file this run never owned stayed wrong. Refuse to call the depot written: the
+    // caller must not promote its manifest or mark the app complete.
+    if result.ok() {
+        let mismatches = files.shape_mismatches();
+        if !mismatches.is_empty() {
+            if let Some(log) = options.log {
+                log(&format!(
+                    "depot-shape-final depot={depot_id} mismatched={}",
+                    mismatches.len()
+                ));
+                for (path, disk, manifest_size) in mismatches.iter().take(10) {
+                    log(&format!(
+                        "depot-shape depot={depot_id} file={path} disk={} manifest={manifest_size}",
+                        disk.map(|len| len.to_string())
+                            .unwrap_or_else(|| "missing".to_string())
+                    ));
+                }
+            }
+            let first = &mismatches[0];
+            return DepotWriteResult::fail(format!(
+                "write_depot: {} file(s) size mismatch after write (first: {} disk={:?} manifest={})",
+                mismatches.len(),
+                first.0,
+                first.1,
+                first.2
+            ));
+        }
     }
     result
 }
@@ -4236,7 +4340,7 @@ mod tests {
         };
         let base = dir.to_str().unwrap();
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, base, 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, base);
+        let files = DepotFiles::prepare(&manifest, &plan, base, None);
         assert!(
             files.needs_verify(0) && files.needs_verify(1),
             "both files have bytes on disk"
@@ -4463,21 +4567,112 @@ rename, a missing hash and a new file all fall through to the normal walk"
     }
 
     #[test]
-    fn trusted_chunk_beyond_the_preexisting_length_is_not_trusted() {
-        let dir = temp_dir("trusted_chunk_truncated");
+    fn chunk_trust_requires_the_manifest_size() {
+        let dir = temp_dir("trusted_chunk_shape");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("data.bin"), b"123456").unwrap();
-        let manifest = delta_manifest(vec![delta_file(
-            "data.bin",
-            vec![delta_chunk(0, b"A", 4), delta_chunk(4, b"B", 4)],
-        )]);
+        fs::write(dir.join("ok.bin"), b"12345678").unwrap(); // exactly the manifest size
+        fs::write(dir.join("short.bin"), b"123456").unwrap(); // truncated
+        fs::write(dir.join("long.bin"), b"1234567890").unwrap(); // stale tail
+        let manifest = delta_manifest(vec![
+            delta_file(
+                "ok.bin",
+                vec![delta_chunk(0, b"A", 4), delta_chunk(4, b"B", 4)],
+            ),
+            delta_file(
+                "short.bin",
+                vec![delta_chunk(0, b"A", 4), delta_chunk(4, b"B", 4)],
+            ),
+            delta_file(
+                "long.bin",
+                vec![delta_chunk(0, b"A", 4), delta_chunk(4, b"B", 4)],
+            ),
+            delta_file(
+                "missing.bin",
+                vec![delta_chunk(0, b"A", 4), delta_chunk(4, b"B", 4)],
+            ),
+        ]);
         let base = dir.to_str().unwrap();
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, base, 4).unwrap();
-        let mut files = DepotFiles::prepare(&manifest, &plan, base);
-        files.mark_trusted_chunks(&manifest, &[(0, 0), (0, 1)]);
-        assert!(files.chunk_is_trusted(0, 0, &manifest.files[0].chunks[0]));
-        assert!(!files.chunk_is_trusted(0, 1, &manifest.files[0].chunks[1]));
-        assert!(!files.all_chunks_trusted(0));
+        let mut files = DepotFiles::prepare(&manifest, &plan, base, None);
+        let pairs: Vec<(u32, u32)> = (0..4).flat_map(|f| [(f, 0u32), (f, 1u32)]).collect();
+        files.mark_trusted_chunks(&manifest, &pairs);
+        // Only the file whose full length matches may reuse the delta's chunks...
+        for (chunk_idx, chunk) in manifest.files[0].chunks.iter().enumerate() {
+            assert!(files.chunk_is_trusted(0, chunk_idx, chunk));
+        }
+        // ...a shorter or longer file is revalidated chunk by chunk even where the offsets exist.
+        for file_idx in 1..=3 {
+            for (chunk_idx, chunk) in manifest.files[file_idx].chunks.iter().enumerate() {
+                assert!(
+                    !files.chunk_is_trusted(file_idx, chunk_idx, chunk),
+                    "file {file_idx} must not trust chunk {chunk_idx}"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_shape_check_reports_short_long_and_missing_files() {
+        let dir = temp_dir("final_shape");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ok.bin"), b"12345678").unwrap();
+        fs::write(dir.join("short.bin"), b"123456").unwrap();
+        fs::write(dir.join("long.bin"), b"1234567890").unwrap();
+        let file = |name: &str| delta_file(name, vec![delta_chunk(0, b"A", 8)]);
+        let manifest = delta_manifest(vec![
+            file("ok.bin"),
+            file("short.bin"),
+            file("long.bin"),
+            file("missing.bin"),
+        ]);
+        let base = dir.to_str().unwrap();
+        let plan = plan_depot_write(&manifest, &[1u8; 32], 4, base, 4).unwrap();
+        let files = DepotFiles::prepare(&manifest, &plan, base, None);
+        let mismatches = files.shape_mismatches();
+        let seen: Vec<(&str, Option<u64>)> = mismatches
+            .iter()
+            .map(|(path, disk, _)| (path.rsplit('/').next().unwrap(), *disk))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("short.bin", Some(6)),
+                ("long.bin", Some(10)),
+                ("missing.bin", None),
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_shape_mismatches_flags_missing_and_wrong_sizes() {
+        let dir = temp_dir("manifest_shape");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ok.bin"), b"12345678").unwrap();
+        fs::write(dir.join("short.bin"), b"123456").unwrap();
+        fs::write(dir.join("long.bin"), b"1234567890").unwrap();
+        let file = |name: &str| delta_file(name, vec![delta_chunk(0, b"A", 8)]);
+        let manifest = delta_manifest(vec![
+            file("ok.bin"),
+            file("short.bin"),
+            file("long.bin"),
+            file("missing.bin"),
+        ]);
+        let mismatches = manifest_shape_mismatches(&manifest, dir.to_str().unwrap());
+        let seen: Vec<(&str, Option<u64>)> = mismatches
+            .iter()
+            .map(|m| (m.path.rsplit('/').next().unwrap(), m.disk))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("short.bin", Some(6)),
+                ("long.bin", Some(10)),
+                ("missing.bin", None),
+            ]
+        );
+        assert!(mismatches.iter().all(|m| m.manifest == 8));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -4562,7 +4757,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
         };
         let base = dir.to_str().unwrap();
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, base, 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, base);
+        let files = DepotFiles::prepare(&manifest, &plan, base, None);
         files.mark_trusted(&[0]);
         // Finalize must be a no-op: the file is neither truncated nor re-created.
         files.finalize_remaining().unwrap();
@@ -4571,7 +4766,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
         let writers = vec![Mutex::new(OrderedWriter::default())];
         assert_pipeline_drained(&files, &writers).unwrap();
         // The same file, NOT trusted, is what the assertion is there to catch.
-        let files2 = DepotFiles::prepare(&manifest, &plan, base);
+        let files2 = DepotFiles::prepare(&manifest, &plan, base, None);
         assert!(assert_pipeline_drained(&files2, &writers).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -4598,7 +4793,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
         };
         let base = dir.to_str().unwrap();
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, base, 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, base);
+        let files = DepotFiles::prepare(&manifest, &plan, base, None);
         assert!(
             dir.join("master.dat").is_dir(),
             "prepare must not remove it: a failed free-space preflight has to leave the tree intact"
@@ -4638,7 +4833,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
         };
         let base = dir.to_str().unwrap();
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, base, 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, base);
+        let files = DepotFiles::prepare(&manifest, &plan, base, None);
         files.mark_trusted(&[0, 1, 2, 3]);
         assert_eq!(files.trusted_indices(), vec![0], "only the intact file may be trusted");
         assert!(!files.is_trusted(1), "a truncated file must be revalidated");
@@ -4673,7 +4868,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
         };
         let base = root.to_str().unwrap();
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, base, 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, base);
+        let files = DepotFiles::prepare(&manifest, &plan, base, None);
         let error = files.clear_blocking_dirs(base).unwrap_err();
         assert!(error.contains("outside the install dir"), "{error}");
         assert!(
@@ -5255,7 +5450,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
             signature: Vec::new(),
         };
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, dir.to_str().unwrap(), 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, dir.to_str().unwrap());
+        let files = DepotFiles::prepare(&manifest, &plan, dir.to_str().unwrap(), None);
         assert_eq!(files.already_present_bytes, 0);
         let handle = files.acquire(0).unwrap();
         // NO file allocation: the file expands only as real bytes are appended (no zero-fill).
@@ -5445,7 +5640,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
             signature: Vec::new(),
         };
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, dir.to_str().unwrap(), 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, dir.to_str().unwrap());
+        let files = DepotFiles::prepare(&manifest, &plan, dir.to_str().unwrap(), None);
         let handle = files.acquire(0).expect("acquire");
         let mut writer = OrderedWriter::default();
         let cursors = vec![AtomicU64::new(0)];
@@ -5517,7 +5712,7 @@ rename, a missing hash and a new file all fall through to the normal walk"
             signature: Vec::new(),
         };
         let plan = plan_depot_write(&manifest, &[1u8; 32], 4, dir.to_str().unwrap(), 4).unwrap();
-        let files = DepotFiles::prepare(&manifest, &plan, dir.to_str().unwrap());
+        let files = DepotFiles::prepare(&manifest, &plan, dir.to_str().unwrap(), None);
         let mut writer = OrderedWriter::default();
         writer.cursor = 2;
         writer.pending.insert(
