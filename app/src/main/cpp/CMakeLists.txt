@@ -12,7 +12,7 @@ add_subdirectory(patchelf)
 add_subdirectory(extras/adrenotools)
 
 add_library(winlator SHARED
-            winlator/drawable.c
+            asurfacerenderer/drawable.c
             winlator/sysvshared_memory.c
             winlator/xconnector_epoll.c
             winlator/alsa_client.c
