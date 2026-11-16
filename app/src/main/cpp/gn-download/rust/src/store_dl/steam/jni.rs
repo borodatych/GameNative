@@ -18,12 +18,14 @@
 //!   "max_workers": 8,
 //!   "process_workers": 4,
 //!   "servers": [{"host": "cache1-xxx.steamcontent.com", "vhost": "", "https_support": "mandatory", "steam_china_only": false}],
-//!   "depots": [{"depot_id": 123, "manifest_id": "456", "depot_key_hex": "ab…", "manifest_request_code": "789"}]
+//!   "depots": [{"depot_id": 123, "manifest_id": "456", "depot_key_hex": "ab…", "manifest_request_code": "789", "app_id": 100, "order": 0}]
 //! }
 //! ```
 //! `manifest_id` and `manifest_request_code` are uint64 values that Kotlin holds in signed
 //! `Long`s; they are sent as unsigned decimal strings (`Long.toUnsignedString`) so high-bit
 //! values survive the trip (a raw JSON number would also be accepted and bit-cast).
+//! `app_id` + `order` задают порядок appinfo: при общем пути внутри приложения побеждает
+//! депот с большим `order`.
 
 use crate::store_dl::steam::depot_downloader::{
     self, DepotDownloadResult, ResolvedDepotSpec,
@@ -347,6 +349,10 @@ fn parse_depots(value: Option<&Value>) -> Vec<ResolvedDepotSpec> {
                     .unwrap_or_default(),
             ),
             manifest_request_code: json_u64(entry.get("manifest_request_code")),
+            // Порядок из appinfo и приложение-владелец: по ним движок решает, чей файл
+            // остаётся, когда два депота одной игры пишут один путь.
+            owning_app_id: entry.get("app_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            install_order: entry.get("order").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         });
     }
     depots
@@ -579,11 +585,16 @@ mod tests {
             "manifest_id": "5671901464708035024",
             "depot_key_hex": "00".repeat(32),
             "manifest_request_code": "15135711086488298552",
+            "app_id": 241930,
+            "order": 1,
         }])));
         assert_eq!(depots.len(), 1);
         assert_eq!(depots[0].depot_id, 219741);
         assert_eq!(depots[0].manifest_id, 5671901464708035024u64);
         assert_eq!(depots[0].manifest_request_code, 15135711086488298552u64);
+        // Порядок appinfo и приложение-владелец доходят до движка явно.
+        assert_eq!(depots[0].owning_app_id, 241930);
+        assert_eq!(depots[0].install_order, 1);
 
         // Same plan with the legacy negative-number form decodes identically.
         let legacy = parse_depots(Some(&json!([{

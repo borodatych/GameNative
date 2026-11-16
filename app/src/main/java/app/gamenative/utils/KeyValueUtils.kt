@@ -29,7 +29,7 @@ import java.util.Locale
 import timber.log.Timber
 
 // Bumping re-parses the whole SteamApp row from PICS on next login and also triggers the root-override cloud requery.
-const val CURRENT_UFS_PARSE_VERSION = 10
+const val CURRENT_UFS_PARSE_VERSION = 11
 
 /**
  * Extension functions relating to [KeyValue] as the receiver type.
@@ -55,11 +55,13 @@ fun KeyValue.generateSteamApp(): SteamApp {
 
     return SteamApp(
         id = this["appid"].asInteger(INVALID_APP_ID),
+        // Порядок children — порядок appinfo: именно он решает, чей файл останется при совпадении
+        // путей между депотами. Поэтому сохраняем его индексом, а не полагаемся на Map.
         depots = this["depots"].children
             .filter { currentDepot ->
                 currentDepot.name?.toIntOrNull() != null
             }
-            .associate { currentDepot ->
+            .mapIndexed { installOrder, currentDepot ->
                 val depotId = currentDepot.name!!.toInt()
 
                 val manifests = currentDepot["manifests"].children.generateManifest()
@@ -82,8 +84,9 @@ fun KeyValue.generateSteamApp(): SteamApp {
                     systemDefined = currentDepot["systemdefined"].asBoolean(),
                     optionalDlcId = currentDepot["config"]["optionaldlc"].asInteger(INVALID_APP_ID),
                     steamDeck = currentDepot["config"]["steamdeck"].asBoolean(false),
+                    installOrder = installOrder,
                 )
-            },
+            }.toMap(),
         branches = this["depots"]["branches"].children.associate {
             it.name!! to BranchInfo(
                 name = it.name!!,

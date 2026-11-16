@@ -876,6 +876,41 @@ class KeyValueUtilsTest {
         assertEquals("savedata_ch.vfs", patterns[2].pattern)
     }
 
+    /**
+     * Shadow of Mordor: депоты 241933 и 241931 содержат одни пути. Клиент Steam оставляет файлы
+     * депота, стоящего в appinfo позже, поэтому разбор обязан сохранить этот порядок, а не
+     * сортировать по id.
+     */
+    @Test
+    fun depotOrderFromAppInfoIsPreserved() {
+        val kvString = """
+            "appinfo"
+            {
+                "appid"     "241930"
+                "depots"
+                {
+                    "241933"
+                    {
+                        "config"    { "oslist" "windows" }
+                        "manifests" { "public" { "gid" "1038205350320663868" } }
+                    }
+                    "241931"
+                    {
+                        "systemdefined" "1"
+                        "config"        { "oslist" "windows" }
+                        "manifests"     { "public" { "gid" "7071254921839907484" } }
+                    }
+                }
+            }
+        """.trimIndent()
+        val steamApp = KeyValue.loadFromString(kvString)!!.generateSteamApp()
+
+        // Порядок Map = порядок appinfo, а не возрастание id.
+        assertEquals(listOf(241933, 241931), steamApp.depots.keys.toList())
+        assertEquals(0, steamApp.depots.getValue(241933).installOrder)
+        assertEquals(1, steamApp.depots.getValue(241931).installOrder)
+    }
+
     @Test
     fun generateSteamAppStampsCurrentUfsParseVersion() {
         val kvString = """

@@ -26,6 +26,11 @@ data class DepotInfo(
     val realm: SteamRealm = SteamRealm.Unknown,
     val systemDefined: Boolean = false,
     val steamDeck: Boolean = false,
+    /**
+     * Место депота в разделе depots appinfo (0 — первый). Клиент Steam при совпадении путей
+     * оставляет файл из депота, стоящего позже, поэтому большее значение важнее.
+     */
+    val installOrder: Int = Int.MAX_VALUE,
 ) {
     /** Windows or OS-untagged (neither Linux nor macOS) */
     val isWindowsCompatible: Boolean

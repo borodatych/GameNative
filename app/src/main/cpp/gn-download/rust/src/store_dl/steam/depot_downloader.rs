@@ -1,6 +1,7 @@
 use crate::store_dl::steam::cdn_client::{auth_status, CdnClient, CdnManifestResult};
 use crate::store_dl::steam::content_manifest::ContentManifest;
 use crate::store_dl::steam::depot_config::DepotConfigStore;
+use crate::store_dl::steam::depot_writer::folded_entry_key;
 use crate::store_dl::steam::depot_writer::{
     manifest_shape_mismatches, write_depot_sequential, CdnAuthTokenRefresher, DepotWriteOptions,
     DEPOT_FILE_FLAG_DIRECTORY,
@@ -40,6 +41,10 @@ pub struct ResolvedDepotSpec {
     pub manifest_id: u64,
     pub depot_key: Vec<u8>,
     pub manifest_request_code: u64,
+    /// Приложение, которому принадлежит депот: порядок appinfo действует внутри него.
+    pub owning_app_id: u32,
+    /// Место депота в разделе depots appinfo: больше — позже, то есть важнее.
+    pub install_order: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -351,20 +356,146 @@ pub fn decide_depot_resume(
     }
 }
 
+/// Карта «путь → депот-владелец»: при совпадении пути внутри одного приложения побеждает
+/// депот, стоящий позже в appinfo (больший `install_order`, при равенстве — позже в плане).
+/// Ключ — (приложение, путь в нижнем регистре).
+fn path_owner_map<'a>(
+    entries: impl IntoIterator<Item = (usize, &'a ResolvedDepotSpec, &'a ContentManifest)>,
+) -> HashMap<(u32, String), u32> {
+    let mut owners: HashMap<(u32, String), ((u32, usize), u32)> = HashMap::new();
+    for (plan_index, spec, manifest) in entries {
+        for file in &manifest.files {
+            if (file.flags & DEPOT_FILE_FLAG_DIRECTORY) != 0 {
+                continue;
+            }
+            let key = (spec.owning_app_id, folded_entry_key(&file.filename));
+            let rank = (spec.install_order, plan_index);
+            match owners.get_mut(&key) {
+                Some(owner) if rank <= owner.0 => {}
+                Some(owner) => *owner = (rank, spec.depot_id),
+                None => {
+                    owners.insert(key, (rank, spec.depot_id));
+                }
+            }
+        }
+    }
+    owners
+        .into_iter()
+        .map(|(key, (_, depot_id))| (key, depot_id))
+        .collect()
+}
+
+/// Владельцы путей по тому, что сейчас лежит на диске: манифесты из `completed/` всех депотов
+/// плана. Нужны до проверки формы, иначе проигравший депот будет вечно «не совпадать» с файлом
+/// победителя и «Обновить» станет перекачивать его туда-сюда.
+fn disk_path_owner_map(
+    cfg: &DepotConfigStore,
+    depots: &[ResolvedDepotSpec],
+) -> HashMap<(u32, String), u32> {
+    let mut known: Vec<(usize, &ResolvedDepotSpec, ContentManifest)> = Vec::new();
+    for (plan_index, spec) in depots.iter().enumerate() {
+        let installed_gid = cfg.installed_manifest(spec.depot_id);
+        if installed_gid == 0 {
+            continue;
+        }
+        if let Some(manifest) = load_cached_manifest(cfg, spec.depot_id, installed_gid, &[]) {
+            known.push((plan_index, spec, manifest));
+        }
+    }
+    path_owner_map(
+        known
+            .iter()
+            .map(|(index, spec, manifest)| (*index, *spec, manifest)),
+    )
+}
+
+/// Оставляет общий путь только у депота-владельца (того, что позже в appinfo), у остальных
+/// депотов одной игры запись убирается: писать и проверять её должен только владелец.
+fn drop_paths_owned_by_later_depots(
+    resolved: &mut [(&ResolvedDepotSpec, ContentManifest)],
+    depots: &[ResolvedDepotSpec],
+    installed: &[(u32, ContentManifest)],
+    log: Option<crate::store_dl::steam::depot_writer::DepotLogCallback<'_>>,
+) {
+    let mut owners: HashMap<(u32, String), ((u32, usize), u32)> = HashMap::new();
+    for (plan_index, spec) in depots.iter().enumerate() {
+        let manifest = resolved
+            .iter()
+            .find(|(other, _)| other.depot_id == spec.depot_id)
+            .map(|(_, manifest)| manifest)
+            .or_else(|| {
+                installed
+                    .iter()
+                    .find(|(depot_id, _)| *depot_id == spec.depot_id)
+                    .map(|(_, manifest)| manifest)
+            });
+        let Some(manifest) = manifest else {
+            continue;
+        };
+        for file in &manifest.files {
+            if (file.flags & DEPOT_FILE_FLAG_DIRECTORY) != 0 {
+                continue;
+            }
+            let key = (spec.owning_app_id, folded_entry_key(&file.filename));
+            let rank = (spec.install_order, plan_index);
+            match owners.get_mut(&key) {
+                Some(owner) if rank <= owner.0 => {}
+                Some(owner) => *owner = (rank, spec.depot_id),
+                None => {
+                    owners.insert(key, (rank, spec.depot_id));
+                }
+            }
+        }
+    }
+    for (spec, manifest) in resolved.iter_mut() {
+        let before = manifest.files.len();
+        manifest.files.retain(|file| {
+            if (file.flags & DEPOT_FILE_FLAG_DIRECTORY) != 0 {
+                return true;
+            }
+            let key = (spec.owning_app_id, folded_entry_key(&file.filename));
+            owners
+                .get(&key)
+                .map_or(true, |(_, owner_id)| *owner_id == spec.depot_id)
+        });
+        let dropped = before - manifest.files.len();
+        if dropped > 0 {
+            if let Some(log) = log {
+                log(&format!(
+                    "depot-clash depot={} dropped {dropped} path(s) owned by a later depot",
+                    spec.depot_id
+                ));
+            }
+        }
+    }
+}
+
 /// stat-only shape check of the installed build: every regular file of the `completed/` manifest
 /// must be present at exactly its manifest size. A missing/unreadable manifest also answers
 /// `false`, so the depot is walked instead of being called up to date on a guess.
 fn installed_depot_shape_matches(
     install_dir: &str,
     cfg: &DepotConfigStore,
-    spec: DepotSpec,
+    spec: &ResolvedDepotSpec,
     depot_key: &[u8],
+    path_owners: &HashMap<(u32, String), u32>,
     log: Option<crate::store_dl::steam::depot_writer::DepotLogCallback<'_>>,
 ) -> bool {
-    let Some(manifest) = load_cached_manifest(cfg, spec.depot_id, spec.manifest_id, depot_key)
+    let Some(mut manifest) = load_cached_manifest(cfg, spec.depot_id, spec.manifest_id, depot_key)
     else {
         return false;
     };
+    // Файл, принадлежащий другому депоту, этим депотом не проверяется: на диске лежит версия
+    // победителя, и расхождение размеров здесь — норма, а не повод перекачивать.
+    let owning_app_id = spec.owning_app_id;
+    manifest.files.retain(|file| {
+        if (file.flags & DEPOT_FILE_FLAG_DIRECTORY) != 0 {
+            return true;
+        }
+        path_owners
+            .get(&(owning_app_id, folded_entry_key(&file.filename)))
+            .map_or(true, |owner_id| *owner_id == spec.depot_id)
+    });
     let mismatches = manifest_shape_mismatches(&manifest, install_dir);
     if mismatches.is_empty() {
         return true;
@@ -508,6 +639,9 @@ pub fn download_resolved_depots_with_cancel_progress(
     // delta and the sweep below diff against the build the tree really is. `fresh` used to forget
     // these depots up front, which silently disabled both of them.
     let mut cfg = DepotConfigStore::load(&config_dir);
+    // Владельцы путей по текущим установленным манифестам: проверка формы должна сразу знать,
+    // что файл принадлежит более позднему депоту и «расхождение» тут ожидаемо.
+    let disk_path_owners = disk_path_owner_map(&cfg, depots);
 
     let cdn = CdnClient::new(ca_bundle_path);
     let mut result = DepotDownloadResult {
@@ -534,8 +668,9 @@ pub fn download_resolved_depots_with_cancel_progress(
             && installed_depot_shape_matches(
                 install_dir,
                 &cfg,
-                spec,
+                depot,
                 &depot.depot_key,
+                &disk_path_owners,
                 log,
             );
         if decide_depot_resume(fresh, &cfg, spec, disk_matches)
@@ -642,6 +777,9 @@ pub fn download_resolved_depots_with_cancel_progress(
     // file an installed depot owns (its manifest is the record of what that depot put there).
     let installed: Vec<(u32, ContentManifest)> = installed_manifest_paths(&cfg, &log);
     drop_paths_shadowed_by_files(&mut resolved, &installed, log);
+    // Файл, который пишут два депота одной игры, должен остаться от того, что позже в appinfo:
+    // у остальных запись убирается целиком, чтобы её не писали и не проверяли.
+    drop_paths_owned_by_later_depots(&mut resolved, depots, &installed, log);
 
     // ── CDN probe: rank the ASSIGNED servers and promote predicted foreign caches that
     // measurably beat the assigned-set median. The on-disk cache seeds the ranking (and any
@@ -1043,6 +1181,7 @@ fn a_file_shadows_a_directory_of_the_same_folded_path() {
         manifest_id: 1,
         depot_key: vec![1u8; 32],
         manifest_request_code: 0,
+        ..Default::default()
     };
     let manifest = |files: &[(&str, u32)]| ContentManifest {
         metadata: crate::store_dl::steam::content_manifest::Metadata {
@@ -1453,6 +1592,7 @@ mod tests {
                 manifest_id: 555,
                 depot_key: vec![1u8; 32],
                 manifest_request_code: 0,
+                ..Default::default()
             }],
             &[CContentServerDirectoryServerInfo {
                 host: "cdn.example".into(),
@@ -1490,6 +1630,7 @@ mod tests {
                 manifest_id: 555,
                 depot_key: vec![1u8; 32],
                 manifest_request_code: 0,
+                ..Default::default()
             }],
             &[CContentServerDirectoryServerInfo {
                 host: "cdn.example".into(),
@@ -1625,6 +1766,7 @@ mod tests {
             manifest_id,
             depot_key: vec![1u8; 32],
             manifest_request_code: 0,
+            ..Default::default()
         };
 
         // Neither is usable, so neither is diffed against: the run fetches instead (and fails here,
@@ -1722,5 +1864,126 @@ mod tests {
         out.extend_from_slice(&magic.to_le_bytes());
         out.extend_from_slice(&(body.len() as u32).to_le_bytes());
         out.extend_from_slice(body);
+    }
+
+    fn owned_spec(depot_id: u32, install_order: u32) -> ResolvedDepotSpec {
+        ResolvedDepotSpec {
+            depot_id,
+            manifest_id: depot_id as u64,
+            depot_key: vec![1u8; 32],
+            manifest_request_code: 0,
+            owning_app_id: 241930,
+            install_order,
+        }
+    }
+
+    fn manifest_with_files(files: &[(&str, u64)]) -> ContentManifest {
+        ContentManifest {
+            metadata: crate::store_dl::steam::content_manifest::Metadata {
+                filenames_encrypted: false,
+                ..Default::default()
+            },
+            files: files
+                .iter()
+                .map(
+                    |(name, size)| crate::store_dl::steam::content_manifest::FileMapping {
+                        filename: (*name).into(),
+                        size: *size,
+                        ..Default::default()
+                    },
+                )
+                .collect(),
+            signature: Vec::new(),
+        }
+    }
+
+    fn file_names(manifest: &ContentManifest) -> Vec<String> {
+        manifest
+            .files
+            .iter()
+            .map(|file| file.filename.clone())
+            .collect()
+    }
+
+    /// Shadow of Mordor: два депота одной игры пишут один путь. Писать его должен только
+    /// поздний по appinfo депот, у раннего запись исчезает.
+    #[test]
+    fn shared_path_is_written_only_by_the_later_depot() {
+        let early = owned_spec(241933, 0);
+        let late = owned_spec(241931, 1);
+        let mut resolved = vec![
+            (
+                &early,
+                manifest_with_files(&[("UI_GFX.arch05", 113717720), ("early.bin", 1)]),
+            ),
+            (
+                &late,
+                manifest_with_files(&[("UI_GFX.arch05", 206186128), ("late.bin", 1)]),
+            ),
+        ];
+        drop_paths_owned_by_later_depots(&mut resolved, &[early.clone(), late.clone()], &[], None);
+
+        assert_eq!(file_names(&resolved[0].1), vec!["early.bin"]);
+        assert_eq!(
+            file_names(&resolved[1].1),
+            vec!["UI_GFX.arch05", "late.bin"]
+        );
+    }
+
+    /// Проверка формы не должна считать файл, принадлежащий другому депоту, расхождением —
+    /// иначе «Обновить» будет перекачивать его между депотами бесконечно.
+    #[test]
+    fn shape_check_ignores_files_owned_by_a_later_depot() {
+        let dir = temp_dir("later_depot_owns_shared_path");
+        let config_dir = config_dir_path(&dir);
+        let mut cfg = DepotConfigStore::load(&config_dir);
+        fs::create_dir_all(cfg.completed_dir()).unwrap();
+        fs::write(
+            cfg.completed_manifest_path(241933, 241933),
+            raw_layout_manifest(241933, 241933, "UI_GFX.arch05", 100),
+        )
+        .unwrap();
+        fs::write(
+            cfg.completed_manifest_path(241931, 241931),
+            raw_layout_manifest(241931, 241931, "UI_GFX.arch05", 200),
+        )
+        .unwrap();
+        assert!(cfg.finish_depot(241933, 241933));
+        assert!(cfg.finish_depot(241931, 241931));
+        // На диске — версия позднего депота.
+        fs::write(dir.join("UI_GFX.arch05"), vec![0u8; 200]).unwrap();
+
+        let early = owned_spec(241933, 0);
+        let late = owned_spec(241931, 1);
+        let owners = disk_path_owner_map(&cfg, &[early.clone(), late.clone()]);
+        assert_eq!(
+            owners.get(&(241930, "ui_gfx.arch05".to_string())),
+            Some(&241931)
+        );
+
+        assert!(
+            installed_depot_shape_matches(dir.to_str().unwrap(), &cfg, &early, &[], &owners, None),
+            "файл позднего депота — не расхождение раннего",
+        );
+        assert!(
+            !installed_depot_shape_matches(
+                dir.to_str().unwrap(),
+                &cfg,
+                &early,
+                &[],
+                &HashMap::new(),
+                None,
+            ),
+            "без карты владельцев расхождение существует — тест не проходит вхолостую",
+        );
+        assert!(installed_depot_shape_matches(
+            dir.to_str().unwrap(),
+            &cfg,
+            &late,
+            &[],
+            &owners,
+            None
+        ));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

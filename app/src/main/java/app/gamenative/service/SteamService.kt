@@ -1851,6 +1851,7 @@ class SteamService : Service(), IChallengeUrlChanged {
                             encryptedManifests = depot.encryptedManifests,
                             systemDefined = depot.systemDefined,
                             steamDeck = depot.steamDeck,
+                            installOrder = depot.installOrder,
                         )
                     }
             }

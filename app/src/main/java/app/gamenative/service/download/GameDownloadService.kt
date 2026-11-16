@@ -116,11 +116,32 @@ object GameDownloadService {
         val servers = resolveCdnServers(steamContent, parentScope)
         if (servers.isEmpty()) throw DownloadFailedException("No CDN servers available")
 
+        // Приложение, которое владеет депотом: именно внутри него действует порядок appinfo.
+        fun owningAppId(depot: DepotInfo): Int = when {
+            depot.dlcAppId != SteamService.INVALID_APP_ID -> depot.dlcAppId
+            depot.depotFromApp != SteamService.INVALID_APP_ID -> depot.depotFromApp
+            else -> appId
+        }
+
+        // Порядок установки — как у клиента Steam: депоты идут в порядке раздела depots appinfo,
+        // и при общем пути файл остаётся от депота, стоящего там позже. Порядок передаётся в
+        // движок явным полем order, чтобы он не зависел от порядка Map или сортировки по id.
+        // Сортировка стабильная: при равном order (старые записи без appinfo) сохраняется как есть.
+        val appRank = mutableMapOf<Int, Int>()
+        selectedDepots.values.forEach { appRank.getOrPut(owningAppId(it)) { appRank.size } }
+        val orderedDepots = selectedDepots.entries.sortedWith(
+            compareBy<Map.Entry<Int, DepotInfo>>(
+                { appRank.getValue(owningAppId(it.value)) },
+                { it.value.installOrder },
+            ),
+        )
+        val depotById = orderedDepots.associate { it.key to it.value }
+
         // ── 2. Resolve per-depot (gid, depot key, manifest request code) ────────
         val depotsJson = JSONArray()
         val resolvedDepotIds = mutableListOf<Int>()
         val resolutions = coroutineScope {
-            selectedDepots.toSortedMap().map { (depotId, depot) ->
+            orderedDepots.map { (depotId, depot) ->
                 async {
                     resolveDepotForDownload(
                         steamApps, steamContent, appId, depotId, depot, branch, branchPassword,
@@ -132,9 +153,12 @@ object GameDownloadService {
         val resolvedDepots = resolutions.filterIsInstance<DepotResolution.Resolved>()
             .map { it.depot }
         for (resolved in resolvedDepots) {
+            val depot = depotById.getValue(resolved.depotId)
             depotsJson.put(
                 JSONObject()
                     .put("depot_id", resolved.depotId)
+                    .put("order", depot.installOrder)
+                    .put("app_id", owningAppId(depot))
                     // gid/code are uint64 in Steam's protocol but signed Longs here; send them
                     // as unsigned decimal strings so high-bit values survive JSON → Rust.
                     .put("manifest_id", java.lang.Long.toUnsignedString(resolved.gid))
@@ -197,13 +221,7 @@ object GameDownloadService {
             branch = branch,
             steamContent = steamContent,
             depotIdToIndex = depotIdToIndex,
-            depotIdToOwningAppId = selectedDepots.mapValues { (_, depot) ->
-                when {
-                    depot.dlcAppId != SteamService.INVALID_APP_ID -> depot.dlcAppId
-                    depot.depotFromApp != SteamService.INVALID_APP_ID -> depot.depotFromApp
-                    else -> appId
-                }
-            },
+            depotIdToOwningAppId = selectedDepots.mapValues { (_, depot) -> owningAppId(depot) },
             downloadInfo = downloadInfo,
             parentScope = parentScope,
         )
