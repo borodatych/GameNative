@@ -457,6 +457,8 @@ mode={}",
                     win_max,
                     per_host_cap,
                 }));
+                // Как и в Steam-писателе: зависшая задача blocking-пула не должна мешать отмене.
+                rt.shutdown_timeout(Duration::from_secs(2));
             }
             Err(err) => {
                 record_first_error(error_slot, format!("{label}: tokio runtime: {err}"));
@@ -697,6 +699,9 @@ fn build_http(opts: &FetchOptions, pool_max_idle_per_host: usize) -> Result<Http
     }
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        // Тот же резолвер с дедлайном, что у Steam: молчащий getaddrinfo должен валить запрос по
+        // таймауту, а не занимать поток blocking-пула до конца прогона.
+        .dns_resolver(std::sync::Arc::new(crate::dns_resolve::TimedResolver::new()))
         .connect_timeout(CdnClient::connect_timeout())
         .pool_max_idle_per_host(pool_max_idle_per_host.max(1))
         .pool_idle_timeout(Duration::from_secs(90));

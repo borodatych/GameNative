@@ -19,10 +19,11 @@
 //! cannot be attributed to our traffic), no byte-rate cap (the in-flight window is the knob we
 //! already have), and growth stays throughput-gated (delay only vetoes/shrinks).
 
+use crate::dns_resolve;
 use std::collections::{HashMap, VecDeque};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,11 @@ pub const QUEUE_GAIN: f64 = 0.10;
 const PROBE_INTERVAL_MS: u64 = 250;
 /// A connect taking this long counts as no-sample (the host is effectively down, not queued).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Сколько держим неудачный резолв, прежде чем пробовать хост снова.
+const RESOLVE_RETRY: Duration = Duration::from_secs(30);
+/// Сколько ждём выхода пробера при drop: он спит по 50 мс, но может быть внутри резолва или
+/// коннекта, а пауза/удаление не должны ждать его дольше.
+const STOP_GRACE: Duration = Duration::from_secs(1);
 /// Base-delay estimation: minimum RTT per 60 s bucket, kept for 10 minutes (RFC 6817).
 const BASE_BUCKET_MS: u64 = 60_000;
 const BASE_HISTORY_MS: u64 = 600_000;
@@ -137,6 +143,8 @@ impl QueueDelay {
 pub struct RttProber {
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+    /// Сигнал о реальном выходе потока — чтобы drop ограничил ожидание.
+    done: Option<mpsc::Receiver<()>>,
 }
 
 impl RttProber {
@@ -155,19 +163,36 @@ impl RttProber {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
+        let (done_tx, done_rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("rtt-prober".into())
             .spawn(move || {
                 let mut bases: HashMap<String, BaseHistory> = HashMap::new();
                 let mut recent: VecDeque<f64> = VecDeque::with_capacity(CURRENT_FILTER);
+                // Адреса (или неудача и её время): зависший резолв нельзя повторять каждый тик,
+                // а teardown не должен ждать застрявший резолв.
+                let mut addrs: HashMap<(String, u16), (Option<SocketAddr>, Instant)> = HashMap::new();
                 let mut i = 0usize;
                 while !stop_thread.load(Ordering::Relaxed) {
                     let (host, port) = &targets[i % targets.len()];
                     i = i.wrapping_add(1);
-                    let addr = (host.as_str(), *port)
-                        .to_socket_addrs()
-                        .ok()
-                        .and_then(|mut it| it.next());
+                    let key = (host.clone(), *port);
+                    let addr = match addrs.get(&key) {
+                        Some((Some(addr), _)) => Some(*addr),
+                        Some((None, at)) if at.elapsed() < RESOLVE_RETRY => None,
+                        _ => {
+                            let lookup_host = host.clone();
+                            let lookup_port = *port;
+                            let resolved = dns_resolve::lookup_with_timeout(
+                                dns_resolve::RESOLVE_TIMEOUT,
+                                move || dns_resolve::lookup_host(&lookup_host, lookup_port),
+                            )
+                            .ok()
+                            .and_then(|mut list| list.pop());
+                            addrs.insert(key, (resolved, Instant::now()));
+                            resolved
+                        }
+                    };
                     if let Some(addr) = addr {
                         let t0 = Instant::now();
                         if TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).is_ok() {
@@ -197,11 +222,13 @@ impl RttProber {
                         thread::sleep(Duration::from_millis(50));
                     }
                 }
+                let _ = done_tx.send(());
             })
             .ok()?;
         Some(Self {
             stop,
             handle: Some(handle),
+            done: Some(done_rx),
         })
     }
 }
@@ -209,9 +236,13 @@ impl RttProber {
 impl Drop for RttProber {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
+        // Ждём ограниченно: пауза/удаление не должны висеть на пробере внутри резолва или
+        // коннекта. Не вышел за grace-период — отпускаем handle: поток допишет в QueueDelay
+        // прогона и завершится сам.
+        if let Some(done) = self.done.take() {
+            let _ = done.recv_timeout(STOP_GRACE);
         }
+        self.handle.take();
     }
 }
 
